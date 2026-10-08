@@ -32,15 +32,23 @@ A status line above the pet reads like Claude Code's own: `Running npm test`, `E
 
 **Reminders.** A turn under 10 seconds just gets confetti. A longer one leaves the pet holding a "done" sign until I click it or send the next prompt; turns over 20 seconds also send a desktop notification. Permission prompts always notify.
 
+**Around the screen.** It doesn't only live on the floor. It sits on the left, right and top edges and in the corners, turned the right way for each, walks around the screen's edge to get there, hides behind an edge with just its hands and the top of its head showing, and peeks out to look around. Now and then it goes exploring on its own and comes back. With two monitors it walks or jumps across to the other one.
+
+**Physics.** Let go of it mid-throw and it keeps the speed: it bounces off screen edges and ceilings, soft-bounces off window sides, squashes when it lands and slides to a stop. It swings while I hold it, a poke shoves it, and it falls when the window it stands on goes away. Dropped near a window top it lands on it; near a window side or a screen edge it clings there (window tops and sides need Hyprland).
+
+**Gestures and weather.** It skips stones, kicks a ball, juggles, flexes and blows a kiss. Real local weather shows around it (rain, clouds and so on, from Open-Meteo for the location of my IP via ipwho.is, with wttr.in as a fallback, refreshed every 15 minutes).
+
+**Notifications.** When a desktop notification arrives, it hops with a letter and shows "App: summary", and during a voice call the voice reads it out at the next lull. Media players stay quiet, so does any app that sends more than 3 in 2 minutes, and so do the apps I list in `quietApps` in its config.
+
 **On its own** it strolls along the bottom of the screen, gets the zoomies, chases the cursor and sits down to look up at it, trips over, sneezes, dances, stretches, and notices when the cursor comes close. Its eyes follow the cursor around the screen. After 5 quiet minutes it falls asleep.
 
 **Interactions:** drag it anywhere (let go mid-air and it falls back to the floor), click to poke it (four quick pokes make it dizzy), right-click for the menu. Only the pet itself catches the mouse; clicks on the empty parts of its window go straight through to whatever is underneath. The same menu sits in the system tray, and the tray tooltip shows the current status.
 
-**Menu:** React to Claude Code, Play animation, Thinking styles, Roam around the screen, Show status text, Notify when Claude is done, Size, Color (pink, Claude orange, mint, sky, lavender, ghost), Always on top, Start at login.
+**Menu:** Talk to me, Voice panel, Voice on, React to Claude Code, Play animation, Thinking styles, Roam around the screen, Show status text, Notify when Claude is done, Show the weather, React to notifications, Size, Color (pink, Claude orange, mint, sky, lavender, ghost), Always on top, Start at login.
 
 ## Talk to it
 
-Claude Bot is also my voice assistant: everything Jarvis (`~/voiceagent`) did now lives here. Hover over or tap the pet and a mic button appears above its head. Click it and the call goes live; click it again to hang up. While the voice is busy, a small strip in the bottom-left corner of the screen shows the call orb (waveform bars while either of us talks, a spinner while it thinks, a `!` when it needs my OK, grey when muted) and what it is doing in plain words ("Listening", "Checking the fleet", the sentence it is saying). Click the orb there to hang up, the text to open the voice panel. Double-tap the pet for the panel too.
+Claude Bot is also my voice assistant: everything Jarvis (`~/voiceagent`) did now lives here. Hover over or tap the pet and a mic button appears beside it, at mid height, clear of its head, its thought bubble and the status line (it turns with the pet on the side and top edges). One click goes live and one click hangs up; the button fills the moment it is pressed, and a press that lands on it counts even if the pet walks on before I let go. While the voice is busy, a small strip in the bottom-left corner of the right-hand screen shows the call orb (waveform bars while either of us talks, a spinner while it thinks, a `!` when it needs my OK, grey when muted) and what it is doing in plain words ("Listening", "Checking the fleet", the sentence it is saying). Click the orb there to hang up, the text to open the voice panel. Double-tap the pet for the panel too.
 
 **Voice on and off.** Off means no listening and no speaking at all: the call ends, any reply in progress goes silent, and the mic stays closed until I turn it back on. Typed messages still get answers, in the transcript only, and music keeps playing. The switch survives restarts. Ways to flip it: "Voice on" in the right-click menu, the switch at the top of the panel, `V` while the pet or the panel has focus, `SUPER + ALT + V`, or `claudebot --voice` (`--voice-on`, `--voice-off`). Clicking the pet's mic while the voice is off turns it on and goes live.
 
@@ -51,7 +59,11 @@ It is a full duplex call. I talk, it answers out loud, and talking over it cuts 
 - **Music:** "play some lo-fi", "skip", "pause", "louder". Tracks come from YouTube through yt-dlp and mpv and play through Claude Bot's own speaker stream, so the music fades down while either of us talks and the echo canceller never mistakes a song for me.
 - **Memory:** it remembers facts, preferences, projects and people I mention, across conversations. It keeps them in `~/.local/share/claudebot/memory.json` and puts them in the session's context at the start of every conversation. The panel's Memory tab lists them; "forget that" or the panel removes one.
 - **Approvals:** risky tool calls ask out loud ("Okay to ...?"). "Yes", "no" or "always" answers, or the card in the panel.
-- **The pet:** "fly", "dance", "go to sleep", "zoomies", "wave", "party" and the rest of its moves, reactions, scenes and thinking styles. The `pet_action` tool runs whatever the pet can do.
+- **The pet:** "fly", "dance", "hide", "peek from the left", "go to the top right corner", "come back", "throw", "kick the ball", "blow me a kiss", "go to the other screen" and the rest of its moves, places, gestures, reactions, scenes and thinking styles. The `pet_action` tool runs whatever the pet can do.
+
+**Taking turns.** When I start talking over a reply, the reply pauses at once (about a third of a second after my first word) and waits to see what I said. If I said something, the old reply is dropped, marked "cut off" in the conversation, and my new words get the answer. If it was a cough, a murmur or its own voice coming back, it picks up the sentence it was on. It never starts talking while I talk or in the short moment after I stop. It waits a patient 1.1 seconds of silence before taking its turn, unless what I said already reads as a finished sentence, in which case it goes after half a second. If I trail off ("turn on the lights and") it waits longer, and if I add to a question it hasn't answered yet, the two become one request instead of two replies. Its own voice is never taken for mine: echo cancellation, an echo gate that learns how much of the speaker reaches the mic, and a check of each transcript against what it just said. My words show in the conversation and the HUD while I'm still saying them. Music ducks while either of us talks, and fleet news waits for a real lull.
+
+**Speed.** From the end of my question to its first spoken word: about 1.6 to 2.9 seconds for simple questions and about 4 seconds for one that needs the fleet, down from 4.4 to 7.6 seconds (median 5.6 before, 2.6 after, measured with `voice/tests/latency.py`). The transcriber runs in process and stays loaded, on a short audio window for short questions; the brain is Haiku with a short prompt and answers simple things without tools; the first words of a reply go to the voice as soon as a clause is ready; and the voice speaks a little faster (speed 1.1, adjustable). Every request logs its stage timings (`latency: ... from end of speech to first word`).
 
 It doesn't narrate ("Checking", "On it"); what it is doing shows in the HUD instead. Agent names go through speech to text, so they match loosely ("claudia bot" finds claudebot), but never so loosely that a message lands on the wrong agent: if two names fit about equally, it asks. An agent spawned into a folder Claude Code hasn't seen stops on the folder trust question; the voice says so and trusts the folder only when I say yes.
 
@@ -73,7 +85,8 @@ claudebot --voice        # voice on or off
 ```
 mic -> PortAudio at 48 kHz, 10 ms blocks
     -> WebRTC echo cancellation, noise suppression and gain (against everything the speaker plays)
-    -> 16 kHz -> Silero VAD cuts utterances -> voxtype transcribes
+    -> 16 kHz -> Silero VAD cuts utterances (early finish on a complete sentence)
+    -> whisper.cpp in process, on voxtype's model (voxtype itself as the fallback)
     -> a Claude Code session through the Agent SDK (fleet, pc, shell, web, music and memory tools)
     -> sentences stream into Kokoro TTS -> the Jarvis EQ, compressor and room -> speaker
 music: yt-dlp -> mpv (raw PCM on a pipe) -> mixed under the voice, ducked while anyone talks
@@ -81,7 +94,7 @@ music: yt-dlp -> mpv (raw PCM on a pipe) -> mixed under the voice, ducked while 
 
 The engine is the Python project in `voice/`. Claude Bot starts it with `uv run` when it launches, hands it a fresh token, restarts it if it dies, and stops it on quit. It listens on `127.0.0.1:47822` (`CLAUDEBOT_VOICE_PORT`) and only accepts Claude Bot's own windows with that token. Audio never goes through a window: WebKitGTK has no echo canceller, so the engine owns the mic and the speaker, and the windows only watch and send commands. The mic is only open during a call or push to talk.
 
-Voice needs Linux with `uv`, `voxtype`, `tower`, `mpv` and `yt-dlp` on the PATH, and the models in `voice/models` (not in git):
+Voice needs Linux with `uv`, `tower`, `mpv` and `yt-dlp` on the PATH, a whisper model from voxtype (`~/.local/share/voxtype/models/ggml-base.en.bin`; `voxtype setup` fetches it), and the models in `voice/models` (not in git):
 
 ```sh
 cd voice/models
@@ -136,7 +149,7 @@ curl --data celebrate http://127.0.0.1:47821/claudebot/play
 curl --data think:cook http://127.0.0.1:47821/claudebot/play
 ```
 
-Scenes: `idle`, `thinking`, `building`, `testing`, `typing`, `reading`, `searching`, `surfing`, `planning`, `delegating`, `alert`, `waiting`, `done`, `compacting`, `error`, `sleeping`. Reactions: `celebrate`, `hello`, `remind`, `dizzy`, `shrug`, `oops`, `notice`. Moves: `walk`, `zoomies`, `chase`, `dance`, `trip`, `sneeze`, `hop`, `wave`, `sit`, `stretch`, `yawn`, `look`. Thinking styles: `think:bubble`, `think:ponder`, `think:pontificate`, `think:cook`, `think:wizard`, `think:vibe`, `think:gears`, `think:hatch`, `think:spin`, `think:wander`, `think:garden`, `think:space`, `think:weather`, `think:doodle`, `think:forge`. And `agent` sends in a demo subagent. Handy for CI scripts, other agents, or a long `make` (`make && curl --data celebrate ...`).
+Places: `hide`, `peek`, `peek:left` (or `right`, `top`, `bottom`), `edge:left` (and the others), `corner:top-left` (and the other three), `home`, `explore`. Physics: `fly`, `drop`, `throw`. Gestures: `stones`, `kick`, `juggle`, `flex`, `kiss`. Screens: `monitor:other`, `monitor:left`, `monitor:right`, `split`. Scenes: `idle`, `thinking`, `building`, `testing`, `typing`, `reading`, `searching`, `surfing`, `planning`, `delegating`, `alert`, `waiting`, `done`, `compacting`, `error`, `sleeping`. Reactions: `celebrate`, `hello`, `remind`, `dizzy`, `shrug`, `oops`, `notice`. Moves: `walk`, `zoomies`, `chase`, `dance`, `trip`, `sneeze`, `hop`, `wave`, `sit`, `stretch`, `yawn`, `look`. Thinking styles: `think:bubble`, `think:ponder`, `think:pontificate`, `think:cook`, `think:wizard`, `think:vibe`, `think:gears`, `think:hatch`, `think:spin`, `think:wander`, `think:garden`, `think:space`, `think:weather`, `think:doodle`, `think:forge`. And `agent` sends in a demo subagent. Handy for CI scripts, other agents, or a long `make` (`make && curl --data celebrate ...`).
 
 While the pet has focus, keys `1`-`0` cycle through the main scenes, `a` brings in a subagent, `d` dances and `z` starts the zoomies.
 
@@ -176,7 +189,9 @@ src/              the pet: plain HTML, canvas and ES modules, no build step
   views.js        one drawing function per scene and thinking style
   brain.js        sessions, hook mapping, reminders, idle behaviour, particles
   crew.js         mini Clawds for subagents
-  world.js        walking the window around the screen, gravity
+  world.js        walking the window around the screen, edges and corners, gravity, surfaces
+  physics.js      throws, bounces, slides and the swing while held
+  weather.js      local weather around the pet
   main.js         render loop, status line, input, Tauri wiring
   voice.js        WebSocket client for the voice engine, shared by the pet and the panel
   voice-pet.js    the pet's mic button, voice commands for the pet, its talking mouth
@@ -191,6 +206,7 @@ src-tauri/src/
   world.rs        monitors, cursor, window moves (native or Hyprland IPC), click-through
   desktop.rs      window sizing and Hyprland rules
   voice.rs        starts, watches and stops the voice engine
+  notifications.rs  desktop notifications from the session bus, for the pet to react to
 voice/src/claudebot_voice/
   server.py       HTTP and WebSocket, local only, token checked
   session.py      the hub: calls, VAD segmenting, turns, approvals, fleet announcements, ducking
@@ -200,7 +216,11 @@ voice/src/claudebot_voice/
   memory.py       long-term memory
   policy.py       which tool calls ask first
   tower.py        tower CLI wrapper and fleet watcher
-  stt.py tts.py vad.py speech.py
+  stt.py          whisper.cpp in process (voxtype as the fallback)
+  tts.py vad.py speech.py
+voice/tests/
+  sim_turns.py    simulated conversations: barge-in, coughs, continuations, echo, grace, announcements
+  latency.py      end of speech to first word, stage by stage, with the real models and Claude
 ```
 
 Everything is drawn in "units" on a 56x30 stage; Clawd is 17x10 units, traced from the terminal mascot. Size just changes how many screen pixels a unit gets (4, 5 or 7). Mini Clawds and the status text are drawn with the same painter at a smaller unit.
