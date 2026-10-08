@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude Bot Voice</title>
+  <meta name="color-scheme" content="dark">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body data-phase="idle">
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div class="halftone" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <header class="titlebar" data-tauri-drag-region>
+    <span id="title" class="title" data-tauri-drag-region>Jarvis</span>
+    <span id="engine" class="engine" data-tauri-drag-region></span>
+    <button id="btn-voice" class="voice-toggle" aria-pressed="true" title="Turn the voice on or off (V)">
+      <span class="voice-dot" aria-hidden="true"></span><span id="voice-label">Voice on</span>
+    </button>
+    <button id="btn-close" class="close" aria-label="Close the panel" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </header>
+
+  <main class="stage">
+    <canvas id="orb" aria-hidden="true"></canvas>
+    <p id="heard" class="heard"></p>
+    <p id="caption" class="caption" aria-live="polite">Standing by.</p>
+    <p id="activity" class="activity"></p>
+  </main>
+
+  <div id="music" class="music" hidden>
+    <svg class="music-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+    <span id="music-title" class="music-title"></span>
+    <button data-music="previous" aria-label="Previous track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20 9 12l10-8v16ZM5 19V5"/></svg></button>
+    <button data-music="toggle" id="music-toggle" aria-label="Pause"><svg class="i-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 3 14 9-14 9V3Z"/></svg></button>
+    <button data-music="next" aria-label="Next track"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 4 10 8-10 8V4Zm14 1v14"/></svg></button>
+    <button data-music="stop" aria-label="Stop the music"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/></svg></button>
+  </div>
+
+  <div class="horizon" aria-hidden="true"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <section id="approval" class="approval" hidden aria-live="assertive">
+    <div class="approval-head">
+      <span class="approval-kicker">Needs your OK</span>
+      <code id="approval-tool"></code>
+    </div>
+    <p id="approval-title" class="approval-title"></p>
+    <pre id="approval-detail" class="approval-detail"></pre>
+    <div class="approval-actions">
+      <button data-decision="deny" class="ghost">Deny <kbd>N</kbd></button>
+      <button data-decision="always" class="ghost">Always <kbd>A</kbd></button>
+      <button data-decision="allow" class="allow">Allow <kbd>Y</kbd></button>
+    </div>
+  </section>
+
+  <form id="composer" class="composer" hidden autocomplete="off">
+    <input id="composer-input" name="text" placeholder="Type instead of talking" aria-label="Message">
+    <kbd>Enter</kbd>
+  </form>
+
+  <nav class="dock" aria-label="Call controls">
+    <div class="status" id="status">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="timer" class="timer">offline</span>
+    </div>
+    <button id="btn-mic" class="round" aria-label="Mute" title="Mute (M)">
+      <svg class="i-mic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+      <svg class="i-mic-off" viewBox="0 0 24 24" aria-hidden="true"><path d="m2 2 20 20"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M12 19v3"/></svg>
+    </button>
+    <button id="btn-type" class="round" aria-label="Type a message" title="Type (Enter)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M7 13h.01M11 13h.01M15 13h.01M8 16h8"/></svg>
+    </button>
+    <button id="btn-call" class="call" title="Call (C)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.1 9.9a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.9.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z"/></svg>
+      <span id="call-label">Call</span>
+    </button>
+    <button id="btn-drawer" class="round" aria-label="Fleet, conversation, memory and settings" aria-expanded="false" title="Panel (D)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </nav>
+
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <header class="drawer-head">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="fleet" aria-selected="true">Fleet <span id="fleet-count" class="count"></span></button>
+        <button role="tab" data-tab="log" aria-selected="false">Conversation</button>
+        <button role="tab" data-tab="memory" aria-selected="false">Memory <span id="memory-count" class="count"></span></button>
+        <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+      </div>
+    </header>
+    <div class="panel" id="tab-fleet" role="tabpanel"></div>
+    <div class="panel" id="tab-log" role="tabpanel" hidden></div>
+    <div class="panel" id="tab-memory" role="tabpanel" hidden></div>
+    <div class="panel" id="tab-settings" role="tabpanel" hidden></div>
+  </aside>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

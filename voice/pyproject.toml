@@ -1,0 +1,25 @@
+[project]
+name = "claudebot-voice"
+version = "0.1.0"
+description = "Claude Bot's voice: speech in and out, the Claude session, fleet, music and memory"
+authors = [
+    { name = "broisnischal", email = "info@nischal-dahal.com.np" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.2.164",
+    "fastapi>=0.142.4",
+    "kokoro-onnx>=0.6.1",
+    "livekit>=1.0",
+    "numpy>=2.5.3",
+    "scipy>=1.14",
+    "sounddevice>=0.5",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+claudebot-voice = "claudebot_voice:main"
+
+[build-system]
+requires = ["uv_build>=0.12.20,<0.13.0"]
+build-backend = "uv_build"
