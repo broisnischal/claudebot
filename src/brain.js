@@ -1,4 +1,4 @@
-import { STAGE, SPRITE, STAND_Y, HOME_X, GLYPHS, WHITE } from './sprite.js';
+import { STAGE, SPRITE, STAND_Y, GROUND, HOME_X, GLYPHS, WHITE } from './sprite.js';
 import { VIEWS, THINK_VIEWS } from './views.js';
 import { Crew } from './crew.js';
 import { randomVerb, styleFor } from './verbs.js';
@@ -18,12 +18,22 @@ const TOOL_STALE = 600e3;
 const OVERLAY_MS = {
   hello: 1600, celebrate: 2600, poke: 650, giggle: 800, land: 450, wake: 1300, yawn: 1700,
   dizzy: 2200, notice: 700, shrug: 1600, oops: 1100, remind: 1500,
+  stones: 4600, kick: 3000, juggle: 4400, flex: 2400, kiss: 2200, mail: 2200,
 };
+// Apps whose notifications the pet ignores unless I say otherwise: chatty media players.
+// Anything sending more than NOISY_COUNT in NOISY_MS is treated as noisy too.
+const QUIET_APPS = ['spotify', 'mpv', 'vlc', 'rhythmbox', 'claudebot', 'claude bot'];
+const NOISY_COUNT = 3;
+const NOISY_MS = 120e3;
+
+// Playful gestures the voice (or the menu) can ask for by name.
+export const GESTURES = ['stones', 'kick', 'juggle', 'flex', 'kiss'];
 const ACT_MS = { look: 2600, walk: 0, zoomies: 0, chase: 0, fly: 3200, explore: 0, hop: 700, wave: 1500, sit: 5000, dance: 3200, yawn: 1700, stretch: 1400, trip: 2400, sneeze: 1500 };
 // Acts that move the pet; they end on arrival instead of after a fixed time.
 const WALKING_ACTS = new Set(['walk', 'zoomies', 'chase', 'fly']);
 // Screen-edge commands: hide, peek, peek:<edge>, edge:<edge>, corner:<top|bottom>-<left|right>, home.
-export const EDGE_COMMAND = /^(hide|peek|home)$|^(peek|edge):(top|right|bottom|left)$|^corner:(top|bottom)-(left|right)$/;
+// Plus the other monitor (monitor:other|left|right) and hiding behind a tiled window (split).
+export const EDGE_COMMAND = /^(hide|peek|home|split)$|^(peek|edge):(top|right|bottom|left)$|^corner:(top|bottom)-(left|right)$|^monitor:(other|left|right)$/;
 // A turn shorter than this just gets confetti; longer ones hold up the "done" sign.
 const REMIND_AFTER = 10e3;
 const NOTIFY_AFTER = 20e3;
@@ -167,7 +177,12 @@ export class Brain {
     this.hits = 0;
     this.bricks = 0;
 
-    if (world) world.onLand = () => this.landed();
+    this.bumpAt = -1e9;
+    this.landPower = 1;
+    if (world) {
+      world.onLand = (speed, gentle) => this.landed(speed, gentle);
+      world.onBump = (speed) => this.bumped(speed);
+    }
   }
 
   get canRoam() {
@@ -184,7 +199,10 @@ export class Brain {
 
   get view() {
     if (this.dragging) return 'dragged';
-    if (this.world?.falling) return 'falling';
+    // A thrown or dropped pet flails, with a squash at each bounce. A poke's little hop
+    // (gentle) keeps whatever it was showing.
+    if (this.world?.falling && !this.world.gentle) return this.now - this.bumpAt < 140 ? 'land' : 'falling';
+    if (this.world?.sliding && !this.overlay) return 'sliding';
     if (this.world?.flying) return 'flying';
     if (this.world?.clinging && !this.overlay) return 'clinging';
     const rim = this.world?.rim;
@@ -355,13 +373,34 @@ export class Brain {
     this.setMood(mood);
   }
 
+  // A desktop notification from another app: a hop with a letter, a pill with the app and
+  // a one-line summary, and the same line for the voice to read out.
+  onNotification(n) {
+    if (this.notesEnabled === false) return;
+    const app = (n.app || 'Notification').trim();
+    const name = app.toLowerCase();
+    const now = this.now;
+    this.notes = (this.notes ?? []).filter((x) => now - x.t < NOISY_MS);
+    const recent = this.notes.filter((x) => x.app === name).length;
+    this.notes.push({ app: name, t: now });
+    const quiet = [...QUIET_APPS, ...(this.quietApps ?? []).map((a) => a.toLowerCase())];
+    if (quiet.includes(name) || recent >= NOISY_COUNT) return;
+    const line = [n.summary, n.body].filter(Boolean).join(': ').replace(/\s+/g, ' ').trim().slice(0, 90);
+    this.lastActive = now;
+    if (this.mood === 'sleeping') this.setMood('idle', true);
+    if (!this.dragging && !this.overlay) this.flash('mail');
+    this.toast(line ? `${app}: ${line}` : app, 4500, 'bell');
+    this.voiceAnnounce?.(line ? `${app}: ${line}` : `Notification from ${app}`);
+  }
+
   ping(title, body) {
     if (this.notifyEnabled) this.onNotify?.(title, body);
   }
 
-  toast(text) {
+  toast(text, ms = 2600, icon = 'check') {
     this.toastText = text;
-    this.toastUntil = this.now + 2600;
+    this.toastIcon = icon;
+    this.toastUntil = this.now + ms;
   }
 
   remind() {
@@ -376,6 +415,19 @@ export class Brain {
 
   play(name) {
     this.lastActive = this.now;
+    if (GESTURES.includes(name)) {
+      this.world?.stop();
+      if (this.mood === 'sleeping') this.setMood('idle', true);
+      this.flash(name);
+      return;
+    }
+    if (name === 'drop' || name === 'throw') {
+      this.overlay = null;
+      this.act = null;
+      if (this.mood === 'sleeping') this.setMood('idle', true);
+      if (!(name === 'drop' ? this.world?.dropIn() : this.world?.toss())) this.flash('dizzy');
+      return;
+    }
     if (EDGE_COMMAND.test(name)) {
       this.overlay = null;
       this.act = null;
@@ -416,6 +468,10 @@ export class Brain {
     if (name === 'home') this.stageRim = null;
     else if (name === 'hide' || name === 'peek' || name.startsWith('peek:')) {
       this.stageRim = { mode: name === 'hide' ? 'hide' : 'peek', tuck: this.stageRim?.tuck ?? 0, out: false, flipAt: this.now + 700 };
+    } else if (name.startsWith('monitor:')) {
+      this.toast('No other monitor that way');
+    } else if (name === 'split') {
+      this.toast('No split here');
     } else {
       this.toast("Can't move the window here");
     }
@@ -463,6 +519,8 @@ export class Brain {
       return;
     }
     this.flash(pick(['poke', 'poke', 'giggle']));
+    // A poke on one side shoves it a little the other way.
+    if (this.pointer) this.world?.push(this.pointer.x < this.x + SPRITE.w / 2 ? 1 : -1);
     this.spawn({ kind: 'glyph', glyph: GLYPHS.heart, color: '#F06A7A', x: this.x + 14, y: STAND_Y - 3, vx: 2, vy: -6, life: 0.9 });
   }
 
@@ -488,10 +546,26 @@ export class Brain {
     this.landed();
   }
 
-  landed() {
+  // Touchdown: the harder it lands, the deeper the squash and the bigger the dust.
+  landed(speed = 120, gentle = false) {
+    this.landPower = speed > 260 ? 3 : speed > 120 ? 2 : 1;
+    if (gentle && this.overlay) return;
     this.flash('land');
-    for (const dir of [-1, 1]) {
-      this.spawn({ x: this.x + (dir < 0 ? 3 : 13), y: STAND_Y + 9, vx: dir * rand(8, 14), vy: -rand(2, 5), g: 20, life: 0.4, color: '#CFC7BC' });
+    this.dust(this.landPower);
+  }
+
+  // A bounce off the floor, a wall or a window side mid-flight.
+  bumped(speed) {
+    this.bumpAt = this.now;
+    this.landPower = speed > 260 ? 3 : speed > 120 ? 2 : 1;
+    this.dust(this.landPower - 1);
+  }
+
+  dust(amount) {
+    for (let i = 0; i < amount * 2; i++) {
+      for (const dir of [-1, 1]) {
+        this.spawn({ x: this.x + (dir < 0 ? 3 : 13), y: STAND_Y + 9, vx: dir * rand(8, 16), vy: -rand(2, 6), g: 20, life: 0.45, color: '#CFC7BC' });
+      }
     }
   }
 
@@ -525,6 +599,7 @@ export class Brain {
     this.overlayAt = this.now;
     this.overlayThen = then;
     this.act = null;
+    this.beats = new Set();
     if (name === 'celebrate') {
       const colors = ['#F6C945', '#6FD3A8', '#7DB7F5', '#F27D9B', '#B79CF2', '#FFFFFF'];
       for (let i = 0; i < 28; i++) {
@@ -636,6 +711,7 @@ export class Brain {
     }
 
     this.stageRimTick(now, dt);
+    this.gestureTick();
     this.crew.update(now);
     this.emit(now);
 
@@ -645,6 +721,18 @@ export class Brain {
       pt.vy += pt.g * s;
       pt.x += pt.vx * s;
       pt.y += pt.vy * s;
+      // Stones and balls bounce on the ground, then roll to a stop and fade out.
+      if (pt.bounce && pt.vy > 0 && pt.y + pt.h >= GROUND) {
+        pt.y = GROUND - pt.h;
+        if (pt.vy > 4) {
+          pt.vy *= -0.42;
+          pt.vx *= 0.75;
+        } else {
+          pt.vy = 0;
+          pt.g = 0;
+        }
+      }
+      if (pt.bounce && pt.g === 0) pt.vx *= Math.exp(-2.5 * s);
       return pt.age < pt.life;
     });
   }
@@ -677,7 +765,8 @@ export class Brain {
       this.nextActAt = now + rand(2500, 8000);
     }
     const rim = this.world?.rim;
-    if (this.act || now < this.nextActAt || this.world?.clinging || this.stageRim || rim?.mode === 'hide' || rim?.mode === 'peek') return;
+    const travelling = (rim?.route.length && !rim.stroll) || this.world?.afterWalk;
+    if (this.act || now < this.nextActAt || this.world?.clinging || this.stageRim || travelling || rim?.mode === 'hide' || rim?.mode === 'peek') return;
     const lonely = now - this.lastActive > 60e3;
     const onFloor = this.canRoam && !rim;
     const cursorHere = onFloor && this.world.sameMonitor(this.world.cursor);
@@ -710,6 +799,10 @@ export class Brain {
     } else if ((view === 'idle' && this.act?.name === 'dance') || (view === 'thinking' && this.style === 'vibe')) {
       this.emitAt = now + 650;
       this.spawn({ kind: 'glyph', glyph: GLYPHS.note, color: pick(['#F6C945', '#7DB7F5', '#F27D9B']), x: this.x + pick([-3, 18]), y: STAND_Y + 1, vx: rand(-2, 2), vy: -4, life: 1.4 });
+    } else if (view === 'sliding') {
+      this.emitAt = now + 50;
+      const dir = Math.sign(this.world.vx) || 1;
+      this.spawn({ w: 2, x: this.x + (dir > 0 ? 3 : 13), y: STAND_Y + 9, vx: -dir * rand(3, 9), vy: -rand(1, 3), life: 0.35, color: '#CFC7BC' });
     } else if (view === 'idle' && this.act?.name === 'zoomies' && this.walking) {
       this.emitAt = now + 60;
       const behind = this.walkDir > 0 ? 2 : 14;
@@ -740,6 +833,37 @@ export class Brain {
       }
     }
     return ph < 380 ? 'up' : ph < 460 ? 'mid' : 'down';
+  }
+
+  // A moment inside a gesture that happens once, `at` ms in.
+  beat(at, fn) {
+    if (this.now - this.overlayAt >= at && !this.beats.has(at)) {
+      this.beats.add(at);
+      fn();
+    }
+  }
+
+  gestureTick() {
+    const g = this.overlay;
+    const x = this.x;
+    if (g === 'stones') {
+      for (const at of [700, 1900, 3100]) {
+        this.beat(at, () => this.spawn({
+          w: pick([1, 1, 2]), color: pick(['#8D8A84', '#A7A39B', '#6F6B66']),
+          x: x + 17, y: STAND_Y + 1, vx: rand(10, 15), vy: -rand(14, 19), g: 38, life: 3.4, bounce: true,
+        }));
+      }
+    } else if (g === 'kick') {
+      this.beat(900, () => this.spawn({ kind: 'ball', w: 2, h: 2, x: x + 17, y: GROUND - 2, vx: rand(17, 22), vy: -rand(12, 16), g: 38, life: 2.6, bounce: true }));
+    } else if (g === 'kiss') {
+      this.beat(900, () => this.spawn({ kind: 'glyph', glyph: GLYPHS.heart, color: '#F06A7A', x: x + 10, y: STAND_Y + 3, vx: 7, vy: -2.5, wobble: 1.2, life: 1.8 }));
+    } else if (g === 'flex') {
+      for (const at of [350, 1300]) {
+        this.beat(at, () => {
+          for (const dx of [-2, 17]) this.spawn({ kind: 'glyph', glyph: GLYPHS.sparkle, color: '#F6C945', x: x + dx, y: STAND_Y - 2, vy: -3, life: 0.7 });
+        });
+      }
+    }
   }
 
   // ---- drawing ---------------------------------------------------------
@@ -787,14 +911,18 @@ export class Brain {
 
   draw(p) {
     const view = this.view;
-    const since = this.dragging || view === 'falling' ? this.now : this.overlay ? this.overlayAt : this.moodAt;
+    const bump = view === 'land' && this.world?.falling;
+    const since = this.dragging || view === 'falling' || view === 'sliding' ? this.now : bump ? this.bumpAt : this.overlay ? this.overlayAt : this.moodAt;
     this.crew.draw(p, this.now, this.color);
     (VIEWS[view] ?? VIEWS.idle)(this, p, this.basePose(), this.now - since);
     for (const pt of this.particles) {
       const fade = Math.min(1, (pt.life - pt.age) / (pt.life * 0.35));
       const x = pt.x + (pt.wobble ? Math.sin(pt.age * 3) * pt.wobble : 0);
       if (pt.kind === 'glyph') p.outlined(pt.glyph, x, pt.y, pt.color, fade);
-      else p.rect(x, pt.y, pt.w, pt.h, pt.color, fade);
+      else if (pt.kind === 'ball') {
+        p.rect(x, pt.y, 2, 2, '#F2F2EE', fade);
+        p.rect(x + (Math.floor(pt.x * 2) % 2), pt.y, 1, 1, '#E5484D', fade);
+      } else p.rect(x, pt.y, pt.w, pt.h, pt.color, fade);
     }
   }
 
@@ -819,7 +947,7 @@ export class Brain {
   }
 
   liveLabel() {
-    if (this.now < this.toastUntil) return { icon: 'check', text: this.toastText };
+    if (this.now < this.toastUntil) return { icon: this.toastIcon ?? 'check', text: this.toastText };
     const view = this.view;
     const s = this.focus;
     const detail = this.demoUntil ? DEMO[view] : s?.detail;

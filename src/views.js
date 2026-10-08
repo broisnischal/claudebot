@@ -3,6 +3,7 @@
 
 import { GROUND, GLYPHS, CLAUDE, OUTLINE, WHITE, drawClawd, spinnerFrame } from './sprite.js';
 import * as P from './props.js';
+import { drawWear } from './weather.js';
 
 const top = (pose) => pose.y + (pose.squash ?? 0);
 
@@ -282,6 +283,7 @@ export const VIEWS = {
         break;
     }
     drawClawd(p, pose);
+    drawWear(p, b.sky, pose.x, top(pose));
     if (a?.name === 'chase' && !b.walking) p.outlined(GLYPHS.heart, pose.x + 16, pose.y - 1 - (Math.floor(at / 300) % 2), '#F06A7A');
   },
 
@@ -380,6 +382,7 @@ export const VIEWS = {
     pose.squash = b.breath(1200);
     pose.legs = [2, 2, 2, Math.floor(t / 280) % 2 ? 1 : 2];
     drawClawd(p, pose);
+    drawWear(p, b.sky, pose.x, top(pose));
     const { x: bx } = b.bubbleSpot(pose, 9);
     const by = pose.y - 6;
     p.bubble(bx, by, 9, 5);
@@ -440,10 +443,13 @@ export const VIEWS = {
 
   // ---- one-shot reactions ----
 
+  // Hanging from the cursor: the body swings behind the motion and sways back.
   dragged(b, p, pose) {
     const k = Math.floor(b.now / 120) % 2;
+    const lean = b.world?.dangle.lean ?? 0;
     pose.y -= 1;
-    pose.legs = k ? [3, 2, 3, 2] : [2, 3, 2, 3];
+    pose.x += Math.round(lean * 0.7);
+    pose.legs = lean > 1.2 ? [2, 2, 3, 3] : lean < -1.2 ? [3, 3, 2, 2] : k ? [3, 2, 3, 2] : [2, 3, 2, 3];
     pose.armL = pose.armR = -4;
     pose.eyes = 'wide';
     pose.look = [0, 0];
@@ -495,6 +501,8 @@ export const VIEWS = {
 
   falling(b, p, pose) {
     const k = Math.floor(b.now / 90) % 2;
+    // Stretches out when dropping fast.
+    if ((b.world?.vy ?? 0) / (b.world?.k || 1) > 200) pose.squash = -1;
     pose.legs = k ? [3, 2, 3, 2] : [2, 3, 2, 3];
     pose.armL = k ? -4 : -2;
     pose.armR = k ? -2 : -4;
@@ -504,9 +512,24 @@ export const VIEWS = {
     drawClawd(p, pose);
   },
 
+  // Squash on touchdown, deeper for harder landings.
   land(b, p, pose, t) {
-    pose.squash = [2, 1, 0][Math.min(2, Math.floor(t / 120))];
-    if (t < 250) pose.eyes = 'blink';
+    const seq = { 1: [1, 0], 2: [2, 1, 0], 3: [3, 2, 1, 0] }[b.landPower] ?? [2, 1, 0];
+    pose.squash = seq[Math.min(seq.length - 1, Math.floor(t / 110))];
+    if (b.landPower > 1) pose.widen = pose.squash > 1 ? 1 : 0;
+    if (t < 250) pose.eyes = b.landPower > 2 ? 'squeeze' : 'blink';
+    drawClawd(p, pose);
+  },
+
+  // Skidding to a stop after a throw: leaning back, arms out, legs braced.
+  sliding(b, p, pose) {
+    const dir = Math.sign(b.world?.vx ?? 0) || 1;
+    pose.look = [dir, 0];
+    pose.squash = 1;
+    pose.armL = dir > 0 ? -3 : 0;
+    pose.armR = dir > 0 ? 0 : -3;
+    pose.eyes = 'wide';
+    pose.x -= dir;
     drawClawd(p, pose);
   },
 
@@ -569,6 +592,107 @@ export const VIEWS = {
     for (let i = 0; i < 5; i++) {
       p.rect(pose.x + 3 + i * 2 + (i % 2), tp - 2 - rise - (i % 2), 2, 2, '#6B6B6B', Math.max(0, 1 - t / 1100));
     }
+  },
+
+  // ---- gestures ----
+
+  // Three stones, one after another: wind up, throw, follow through.
+  stones(b, p, pose, t) {
+    const k = t - 200;
+    const throws = Math.floor(k / 1200);
+    const ph = ((k % 1200) + 1200) % 1200;
+    if (throws < 3 && k >= 0 && ph < 500) {
+      pose.armR = -4;
+      pose.x -= 1;
+      pose.eyes = 'squeeze';
+      pose.look = [1, 0];
+    } else if (throws < 3 && k >= 0 && ph < 750) {
+      pose.armR = 0;
+      pose.x += 1;
+      pose.look = [1, 0];
+      pose.eyes = 'happy';
+    } else {
+      pose.look = [1, 0];
+    }
+    drawClawd(p, pose);
+    if (throws < 3 && k >= 0 && ph < 500) p.rect(pose.x + 17, top(pose), 1, 1, '#8D8A84');
+  },
+
+  kick(b, p, pose, t) {
+    pose.look = [1, 1];
+    if (t < 600) {
+      p.rect(pose.x + 17, GROUND - 2, 2, 2, '#F2F2EE');
+      p.rect(pose.x + 17, GROUND - 2, 1, 1, '#E5484D');
+    } else if (t < 900) {
+      pose.legs = [2, 2, 2, 1];
+      pose.x -= 1;
+      pose.armL = -2;
+      p.rect(pose.x + 18, GROUND - 2, 2, 2, '#F2F2EE');
+    } else if (t < 1200) {
+      pose.legs = [2, 2, 1, 2];
+      pose.x += 1;
+      pose.armR = -3;
+      pose.eyes = 'squeeze';
+    } else {
+      pose.eyes = 'happy';
+      pose.armL = pose.armR = Math.floor(t / 200) % 2 ? -4 : -1;
+    }
+    drawClawd(p, pose);
+  },
+
+  // Three balls passed from hand to hand in a fountain.
+  juggle(b, p, pose, t) {
+    const colors = ['#E5484D', '#F6C945', '#3F8EDB'];
+    const beat = t / 700;
+    pose.armL = Math.floor(beat) % 2 ? -2 : 0;
+    pose.armR = Math.floor(beat) % 2 ? 0 : -2;
+    pose.look = [0, -1];
+    drawClawd(p, pose);
+    const tp = top(pose);
+    for (let i = 0; i < 3; i++) {
+      const cycle = beat + (i * 2) / 3;
+      const ph = cycle % 1;
+      const leftToRight = Math.floor(cycle) % 2 === 0;
+      const from = leftToRight ? pose.x + 1 : pose.x + 15;
+      const to = leftToRight ? pose.x + 15 : pose.x + 1;
+      const bx = from + (to - from) * ph;
+      const by = tp + 3 - Math.sin(Math.PI * ph) * 10;
+      p.rect(bx, by, 1, 1, colors[i]);
+    }
+  },
+
+  flex(b, p, pose, t) {
+    const pump = Math.floor(t / 400) % 2;
+    pose.armL = pose.armR = -4;
+    pose.squash = pump ? -1 : 0;
+    pose.eyes = 'happy';
+    pose.mouth = 'w';
+    drawClawd(p, pose);
+    const tp = top(pose);
+    p.rect(pose.x, tp - 1 - pump, 2, 1, pose.color);
+    p.rect(pose.x + 15, tp - 1 - pump, 2, 1, pose.color);
+  },
+
+  kiss(b, p, pose, t) {
+    if (t < 850) {
+      pose.armR = -1;
+      pose.eyes = 'closed';
+      pose.mouth = 'o';
+    } else {
+      pose.armR = -4;
+      pose.eyes = 'happy';
+    }
+    drawClawd(p, pose);
+  },
+
+  // A desktop notification: hop up holding the letter.
+  mail(b, p, pose, t) {
+    if (t < 400) pose.y -= [0, 2, 3, 1][Math.floor(t / 100)];
+    pose.armL = pose.armR = -4;
+    pose.eyes = t < 600 ? 'wide' : 'happy';
+    pose.look = [0, -1];
+    drawClawd(p, pose);
+    P.envelope(p, pose.x, top(pose));
   },
 
   wake(b, p, pose, t) {

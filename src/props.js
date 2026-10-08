@@ -342,12 +342,14 @@ export function planet(p, cx, cy) {
   p.rect(cx - 2, cy, 5, 1, '#E8D4B0');
 }
 
-export function rainCloud(p, x, top, t, storm = false) {
+// A little grey cloud over the head. It only rains from it when `drops` is set; falling
+// rain is otherwise left to the real weather, so the two never get confused.
+export function rainCloud(p, x, top, t, storm = false, drops = false) {
   const cy = top - 8;
   if (storm && t % 2600 < 160) {
     p.bitmap(['.#', '#.', '.#', '#.'], x + 8, cy + 4, '#FFE45C');
   }
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; drops && i < 5; i++) {
     const ph = (t / 600 + i / 5) % 1;
     p.rect(x + 5 + i * 2, cy + 4 + Math.round(ph * 3), 1, 1, '#7FB2E5', 1 - ph * 0.4);
   }
@@ -385,4 +387,16 @@ export function wrench(p, x, top, frame) {
   p.rect(x + 17, r, 3, 1, STEEL);
   p.rect(x + 20, r - 1, 1, 1, STEEL);
   p.rect(x + 20, r + 1, 1, 1, STEEL);
+}
+
+// A letter held up over the head, for desktop notifications.
+export function envelope(p, x, top) {
+  p.rect(x + 5, top - 7, 7, 5, WHITE);
+  p.rect(x + 5, top - 7, 7, 1, '#D9D3C7');
+  p.rect(x + 6, top - 6, 1, 1, '#B8B2A7');
+  p.rect(x + 7, top - 5, 1, 1, '#B8B2A7');
+  p.rect(x + 8, top - 4, 1, 1, '#B8B2A7');
+  p.rect(x + 9, top - 5, 1, 1, '#B8B2A7');
+  p.rect(x + 10, top - 6, 1, 1, '#B8B2A7');
+  p.rect(x + 8, top - 2, 1, 2, '#8B5A2B');
 }

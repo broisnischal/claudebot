@@ -52,10 +52,20 @@ export function drawOrb(ctx, ox, oy, cell, n, o) {
   }
   ctx.globalAlpha = 1;
   if (fade < 0.6) return;
+  if (o.pressed) {
+    // pressed: a filled disc, so the click shows the moment it lands
+    for (let row = 0; row < n; row++) {
+      const dy = row - c;
+      const inner = Math.sqrt(Math.max(0, (r - 1) ** 2 - dy * dy));
+      if (Math.abs(dy) > r - 1) continue;
+      px(Math.ceil(c - inner), row, Math.floor(c + inner) - Math.ceil(c - inner) + 1, 1, '#ECE7DE', 0.95);
+    }
+    ctx.globalAlpha = 1;
+  }
 
   const mid = (w, h) => [Math.floor((n - w) / 2), Math.floor((n - h) / 2)];
   if (phase === 'idle' || phase === 'hangup') {
-    glyph(MIC, ...mid(5, 7), hot ? '#FFFFFF' : phase === 'hangup' ? '#FFB4B4' : '#ECE7DE');
+    glyph(MIC, ...mid(5, 7), o.pressed ? '#161514' : hot ? '#FFFFFF' : phase === 'hangup' ? '#FFB4B4' : '#ECE7DE');
   } else if (phase === 'off' || phase === 'muted') {
     glyph(MIC, ...mid(5, 7), '#6E6A64');
     for (let i = 0; i < n - 4; i++) px(2 + i, n - 3 - i, 1, 1, '#FF6B6B');

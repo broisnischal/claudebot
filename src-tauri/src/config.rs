@@ -11,6 +11,10 @@ pub struct Config {
     pub roam: bool,
     pub notify: bool,
     pub label: bool,
+    pub weather: bool,
+    pub notify_react: bool,
+    /// Apps whose desktop notifications the pet ignores (case-insensitive names).
+    pub quiet_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -23,6 +27,9 @@ impl Default for Config {
             roam: true,
             notify: true,
             label: true,
+            weather: true,
+            notify_react: true,
+            quiet_apps: vec![],
         }
     }
 }

@@ -30,7 +30,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:47822 http://127.0.0.1:47822"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:47822 http://127.0.0.1:47822 https://ipwho.is https://api.open-meteo.com https://wttr.in"
     }
   },
   "bundle": {

@@ -6,6 +6,7 @@
 // layout pixels on Hyprland), so everything here is relative to the window's own size.
 
 import { STAGE, SPRITE, GROUND, STAND_Y, HOME_X } from './sprite.js';
+import { PHYS, airStep, slideStep, Trail, Dangle, capSpeed } from './physics.js';
 
 // Off the floor the pet can sit on any screen edge, rotated so its feet face the edge:
 // the window turns portrait on the side walls and the canvas draws through a rotation.
@@ -14,10 +15,9 @@ export const EDGES = ['top', 'right', 'bottom', 'left']; // clockwise
 const HALF = SPRITE.w / 2; // half the pet's length along an edge
 const DEPTH = 10; // stage units from the feet to the top of the head
 const TUCK = { sit: 0, out: 0.45, in: 0.86 }; // how far past the edge it pushes, as a share of DEPTH
-const RIM_PACE = 22; // stage units per second along an edge
+const RIM_PACE = { trip: 34, stroll: 10 }; // stage units per second along an edge
 const CENTER = [HOME_X + HALF, GROUND - 5]; // middle of the body, in stage units
 
-const GRAVITY = 380; // stage units per second squared
 const SNAP = 7; // stage units: how close to an edge or a top counts as touching it
 const CLING_MS = [20e3, 45e3]; // how long it hangs on before its arms get tired
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -49,6 +49,17 @@ export class World {
     this.onLand = null;
     this.inflight = false;
     this.queued = false;
+    this.clock = 0; // ms, advanced by tick so timings follow the animation clock
+    // Physics: velocity in desktop px/s while airborne or sliding, the cursor trail and the
+    // dangle while held. `gentle` marks small hops (a poke) that keep the current pose.
+    this.vx = 0;
+    this.vy = 0;
+    this.sliding = false;
+    this.gentle = false;
+    this.held = false;
+    this.trail = new Trail();
+    this.dangle = new Dangle();
+    this.onBump = null;
   }
 
   get canRoam() {
@@ -90,7 +101,7 @@ export class World {
   }
 
   async refresh() {
-    if (!this.invoke || this.moving || this.falling || this.flying) return;
+    if (!this.invoke || this.moving || this.falling || this.sliding || this.flying) return;
     try {
       const w = await this.invoke('world');
       this.backend = w.backend;
@@ -175,8 +186,24 @@ export class World {
     const k = this.k;
     const s = this.perch?.kind === 'top' && this.surface(this.perch.id);
     if (s) return [s.x - (HOME_X + 4) * k, s.x + s.w - (HOME_X + SPRITE.w - 4) * k];
-    const m = this.monitor();
-    return [m.x - HOME_X * k, m.x + m.w - (HOME_X + SPRITE.w) * k];
+    const [lo, hi] = this.floorSpan();
+    return [lo - HOME_X * k, hi - (HOME_X + SPRITE.w) * k];
+  }
+
+  // Floor it can walk without jumping: this monitor plus neighbours whose bottom edges line
+  // up, so it strolls straight across the boundary between them.
+  floorSpan(m = this.monitor()) {
+    const floor = m.y + m.h;
+    let [lo, hi] = [m.x, m.x + m.w];
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const o of this.monitors) {
+        if (Math.abs(o.y + o.h - floor) > 2) continue;
+        if (Math.abs(o.x + o.w - lo) < 2) [lo, grew] = [o.x, true];
+        if (Math.abs(o.x - hi) < 2) [hi, grew] = [o.x + o.w, true];
+      }
+    }
+    return [lo, hi];
   }
 
   // Window x that hangs the pet on a vertical edge. facing 1: the wall is on its right.
@@ -221,7 +248,7 @@ export class World {
   // ---- walking ----
 
   get canWalk() {
-    return this.canRoam && !this.rim && !this.clinging && !this.flying && !this.falling;
+    return this.canRoam && !this.rim && !this.clinging && !this.flying && !this.falling && !this.sliding;
   }
 
   walkTo(screenX, unitsPerSec) {
@@ -236,11 +263,13 @@ export class World {
 
   // Head somewhere at least `minUnits` away along the floor or window top.
   wander(minUnits, unitsPerSec) {
-    if (this.rim?.mode === 'sit' && !this.rim.route.length) {
+    if (this.rim?.mode === 'sit' && !this.rim.route.length && !this.rim.stay) {
       const [lo, hi] = this.rimRange(this.rim.edge);
       const s = lo + Math.random() * (hi - lo);
       if (Math.abs(s - this.rim.s) < minUnits * this.k) return false;
       this.rim.route = [{ edge: this.rim.edge, s }];
+      this.rim.pace = RIM_PACE.stroll;
+      this.rim.stroll = true;
       return true;
     }
     if (!this.canWalk) return false;
@@ -267,7 +296,8 @@ export class World {
 
   stop() {
     this.target = null;
-    if (this.rim?.mode === 'sit' && this.rim.route.length === 1 && this.rim.route[0].edge === this.rim.edge) this.rim.route = [];
+    this.afterWalk = null;
+    if (this.rim?.stroll) this.rim.route = [];
   }
 
   // Drop everything in progress, including a move already queued for the compositor,
@@ -276,10 +306,73 @@ export class World {
     this.target = null;
     this.flight = null;
     this.falling = false;
+    this.sliding = false;
+    this.vx = this.vy = 0;
     this.perch = null;
     this.rim = null;
     this.afterLanding = null;
+    this.afterWalk = null;
     this.queued = false;
+    this.held = true;
+    this.trail.clear();
+    this.dangle.reset();
+  }
+
+  // Every frame while it's held: sample the cursor for the throw and swing the body.
+  holdTick(dt) {
+    this.clock += dt;
+    const now = this.clock;
+    if (this.invoke && this.backend !== 'fixed') {
+      this.invoke('cursor').then((c) => {
+        if (c && this.held) {
+          this.cursor = c;
+          this.trail.add(now, c.x, c.y);
+        }
+      }).catch(() => {});
+    }
+    this.dangle.step(dt / 1000, this.trail.velocity(now).vx / this.k);
+  }
+
+  // ---- physics ----
+
+  // Send it flying with a velocity in stage units per second.
+  launch(vx, vy, { gentle = false, through = false } = {}) {
+    if (!this.canRoam) return false;
+    this.rim = null;
+    this.flight = null;
+    this.target = null;
+    this.reorient('bottom');
+    this.startFall(through);
+    [this.vx, this.vy] = capSpeed(vx * this.k, vy * this.k, this.k);
+    this.gentle = gentle;
+    return true;
+  }
+
+  // A poke shoves it a little away from the finger, if it's standing on something.
+  push(dir) {
+    if (!this.canRoam || this.rim || this.falling || this.flying || this.clinging || this.edge !== 'bottom') return false;
+    return this.launch(dir * 40, -75, { gentle: true });
+  }
+
+  // "drop": from the floor it reappears at the top of the screen and falls; from anywhere
+  // else it lets go and drops straight down to the floor.
+  dropIn() {
+    if (!this.canRoam) return false;
+    if (!this.rim && this.perch?.kind === 'floor') {
+      const m = this.monitor();
+      this.win.y = m.y - STAND_Y * this.k + 4 * this.k;
+      this.send();
+      return this.launch(0, 0);
+    }
+    return this.launch(0, 0, { through: true });
+  }
+
+  // "throw": a toss toward the middle of the screen, bouncing off whatever it meets.
+  toss() {
+    if (!this.canRoam) return false;
+    const m = this.monitor();
+    const toward = Math.sign(m.x + m.w / 2 - this.petCenter().x) || 1;
+    return this.launch(toward * (220 + Math.random() * 260), -(280 + Math.random() * 180));
   }
 
   // Stop hanging on or flying, and fall. A pet hiding on its own comes back out instead;
@@ -315,7 +408,10 @@ export class World {
 
   startFall(through = false) {
     this.falling = true;
+    this.sliding = false;
+    this.gentle = false;
     this.through = through;
+    this.vx = 0;
     this.vy = 0;
     this.perch = null;
   }
@@ -323,8 +419,16 @@ export class World {
   // Called after a drop. Whatever is closest within reach wins: a window top, any screen
   // edge (the pet turns to sit on it), or a window's side to cling to. Else it falls.
   drop() {
+    this.held = false;
     if (!this.canRoam) return false;
     const k = this.k;
+    // Let go while moving fast and it keeps that speed: bounces, slides, then settles.
+    const { vx, vy } = this.trail.velocity(this.clock);
+    this.trail.clear();
+    if (Math.hypot(vx, vy) > PHYS.throwMin * k) {
+      this.launch(vx / k, vy / k);
+      return true;
+    }
     const reach = SNAP * k;
     const m = this.monitor();
     const c = this.petCenter();
@@ -379,7 +483,7 @@ export class World {
   clingTo(s, edgeX, facing) {
     this.reorient('bottom');
     this.win.x = this.sideX(edgeX, facing);
-    this.perch = { kind: 'side', id: s.id, facing, oy: this.win.y - s.y, until: performance.now() + rand(...CLING_MS) };
+    this.perch = { kind: 'side', id: s.id, facing, oy: this.win.y - s.y, until: this.clock + rand(...CLING_MS) };
     this.send();
   }
 
@@ -387,6 +491,7 @@ export class World {
 
   // Range of `s` on an edge that keeps the whole pet on the monitor.
   rimRange(edge) {
+    if (this.rim?.wall && this.rim.edge === edge) return this.rim.wall.span;
     const m = this.monitor();
     const k = this.k;
     return edge === 'top' || edge === 'bottom'
@@ -395,14 +500,106 @@ export class World {
   }
 
   // Window position for a spot on an edge, pushed `tuck` of the way past it.
-  placeOn(edge, s, tuck) {
+  // `wall` replaces the screen edge with a window's edge (hiding in a split).
+  placeOn(edge, s, tuck, wall = null) {
     const m = this.monitor();
     const shift = tuck * DEPTH * this.k;
     const [fx, fy] = this.mapPoint(edge, HOME_X + HALF, GROUND);
-    if (edge === 'bottom') return { x: s - fx, y: m.y + m.h + shift - fy };
-    if (edge === 'top') return { x: s - fx, y: m.y - shift - fy };
-    if (edge === 'left') return { x: m.x - shift - fx, y: s - fy };
-    return { x: m.x + m.w + shift - fx, y: s - fy };
+    if (edge === 'bottom') return { x: s - fx, y: (wall?.pos ?? m.y + m.h) + shift - fy };
+    if (edge === 'top') return { x: s - fx, y: (wall?.pos ?? m.y) - shift - fy };
+    if (edge === 'left') return { x: (wall?.pos ?? m.x) - shift - fx, y: s - fy };
+    return { x: (wall?.pos ?? m.x + m.w) + shift - fx, y: s - fy };
+  }
+
+  // The part of the desktop where the pet may be drawn while it hides behind a window's
+  // edge, in desktop px; null when nothing needs hiding.
+  clip() {
+    const wall = this.rim?.wall;
+    if (!wall) return null;
+    if (this.rim.edge === 'right') return { x0: -Infinity, x1: wall.pos, y0: -Infinity, y1: Infinity };
+    if (this.rim.edge === 'left') return { x0: wall.pos, x1: Infinity, y0: -Infinity, y1: Infinity };
+    if (this.rim.edge === 'bottom') return { x0: -Infinity, x1: Infinity, y0: -Infinity, y1: wall.pos };
+    return { x0: -Infinity, x1: Infinity, y0: wall.pos, y1: Infinity };
+  }
+
+  // ---- other monitors and window splits ----
+
+  // Jump to another monitor in a proper arc, landing a little way in from its near side.
+  jumpTo(which) {
+    if (!this.canRoam || this.monitors.length < 2) return false;
+    const m = this.monitor();
+    const c = this.petCenter();
+    const mid = (o) => o.x + o.w / 2;
+    let options = this.monitors.filter((o) => o !== m);
+    if (which === 'left') options = options.filter((o) => mid(o) < mid(m));
+    if (which === 'right') options = options.filter((o) => mid(o) > mid(m));
+    const t = options.sort((a, b) => Math.abs(mid(a) - c.x) - Math.abs(mid(b) - c.x))[0];
+    if (!t) return false;
+    const k = this.k;
+    const inset = Math.min(t.w * 0.25, 60 * k);
+    const tx = mid(t) > c.x ? t.x + inset : t.x + t.w - inset;
+    // Rise at least 30 units above the take-off (more if the far floor is higher), then
+    // solve for the time that lands the feet exactly on the far monitor's floor.
+    const g = PHYS.gravity * k;
+    const drop = t.y + t.h - (c.y + 5 * k); // positive when the far floor is lower
+    const rise = 30 * k + Math.max(0, -drop);
+    const vy = -Math.sqrt(2 * g * rise);
+    const T = (-vy + Math.sqrt(vy * vy + 2 * g * drop)) / g;
+    const vx = (tx - c.x) / T;
+    this.rim = null;
+    this.reorient('bottom');
+    return this.launch(vx / k, vy / k, { through: true });
+  }
+
+  // Borders between tiled windows on this monitor: 'v' where two sit side by side,
+  // 'h' where one sits above the other. `behind` is the window the pet hides behind.
+  splits(m = this.monitor()) {
+    const k = this.k;
+    const on = this.surfaces.filter((s) => s.x + s.w / 2 >= m.x && s.x + s.w / 2 < m.x + m.w);
+    const found = [];
+    for (const a of on) {
+      for (const b of on) {
+        if (a === b) continue;
+        const gap = b.x - (a.x + a.w);
+        const [top, bottom] = [Math.max(a.y, b.y), Math.min(a.y + a.h, b.y + b.h)];
+        if (gap >= -2 && gap <= 40 && bottom - top > 2 * SPRITE.w * k) {
+          found.push({ kind: 'v', pos: b.x, span: [top + HALF * k, bottom - HALF * k], behind: b.id, at: b.x });
+        }
+        const vgap = b.y - (a.y + a.h);
+        const [left, right] = [Math.max(a.x, b.x), Math.min(a.x + a.w, b.x + b.w)];
+        if (vgap >= -2 && vgap <= 40 && right - left > 2 * SPRITE.w * k) {
+          found.push({ kind: 'h', pos: b.y, span: [left + HALF * k, right - HALF * k], behind: b.id, at: b.y });
+        }
+      }
+    }
+    return found;
+  }
+
+  // Walk over to the nearest split and slip behind the window there, then peek out.
+  hideInSplit(manual = true) {
+    const list = this.splits();
+    if (!list.length) return false;
+    const c = this.petCenter();
+    const near = (sp) => (sp.kind === 'v' ? Math.abs(sp.pos - c.x) : Math.abs(clamp(c.x, ...sp.span) - c.x) + Math.abs(sp.pos - c.y));
+    const sp = list.sort((a, b) => near(a) - near(b))[0];
+    const x = sp.kind === 'v' ? sp.pos - HALF * this.k : clamp(c.x, ...sp.span);
+    const go = () => this.slipBehind(sp, manual);
+    if (this.walkTo(x, 20)) this.afterWalk = go;
+    else go();
+    return true;
+  }
+
+  slipBehind(sp, manual) {
+    const edge = sp.kind === 'v' ? 'right' : 'bottom';
+    const [lo, hi] = sp.span;
+    const s = sp.kind === 'v' ? lo + (hi - lo) * 0.6 : clamp(this.centerX(), lo, hi);
+    this.perch = null;
+    this.target = null;
+    this.rim = {
+      edge, s, tuck: 1, mode: 'peek', route: [], goal: null, out: false, flipAt: this.clock + 900,
+      until: manual ? 0 : this.clock + rand(20e3, 45e3), manual, wall: { pos: sp.pos, span: sp.span, id: sp.behind, at: sp.at },
+    };
+    this.reorient(edge);
   }
 
   // Turn the window for another edge, keeping the pet where it is on screen.
@@ -474,6 +671,15 @@ export class World {
   //   hide, peek, peek:<edge>, edge:<edge>, corner:<top|bottom>-<left|right>, home
   command(name) {
     if (!this.canRoam) return false;
+    if (name.startsWith('monitor:')) return this.jumpTo(name.slice(8));
+    // From behind a window, or before hunting for a split, come down to the floor first.
+    if (this.rim && (this.rim.wall ? !['hide', 'peek', 'home'].includes(name) : name === 'split')) {
+      this.rim = null;
+      this.reorient('bottom');
+      this.startFall(true);
+      this.afterLanding = () => this.command(name);
+      return true;
+    }
     // From a window top, a side or mid-air, get down to the floor first.
     if (!this.rim && (this.falling || this.flying || this.perch?.kind !== 'floor')) {
       this.afterLanding = () => this.command(name);
@@ -483,6 +689,7 @@ export class World {
       return true;
     }
     if (name === 'home') return this.goHome(), true;
+    if (name === 'split') return this.hideInSplit();
     if (!this.rim) this.sitOn('bottom', this.centerX());
     const r = this.rim;
     const m = this.monitor();
@@ -504,6 +711,7 @@ export class World {
     r.manual = true;
     r.until = 0;
     r.home = false;
+    r.stay = cmd === 'corner'; // a corner is a spot, not a stretch of edge to stroll along
     this.goTo(edge, s, mode);
     return true;
   }
@@ -513,12 +721,15 @@ export class World {
     r.mode = 'sit';
     r.goal = mode;
     r.out = false;
+    r.pace = RIM_PACE.trip;
+    r.stroll = false;
     this.routeTo(edge, s);
   }
 
   // A trip of its own: off to a real edge of the desktop to peek or sit for a while.
   explore() {
     if (!this.canRoam || this.rim || this.perch?.kind !== 'floor') return false;
+    if (Math.random() < 0.3 && this.hideInSplit(false)) return true;
     const m = this.monitor();
     const spots = ['left', 'right', 'top'].filter((e) => this.outer(e, m));
     if (!spots.length) return false;
@@ -526,7 +737,7 @@ export class World {
     const edge = spots[Math.floor(Math.random() * spots.length)];
     const [lo, hi] = this.rimRange(edge);
     this.goTo(edge, lo + Math.random() * (hi - lo), Math.random() < 0.6 ? 'peek' : 'sit');
-    this.rim.until = performance.now() + rand(25e3, 60e3);
+    this.rim.until = this.clock + rand(25e3, 60e3);
     return true;
   }
 
@@ -534,7 +745,7 @@ export class World {
   goHome() {
     const r = this.rim;
     if (!r) return;
-    if (r.edge === 'bottom') {
+    if (r.edge === 'bottom' && !r.wall) {
       r.route = [];
       r.mode = 'sit';
       r.goal = null;
@@ -548,7 +759,17 @@ export class World {
 
   rimTick(s) {
     const r = this.rim;
-    const now = performance.now();
+    const now = this.clock;
+    if (r.wall) {
+      const w = this.surface(r.wall.id);
+      const at = w && (r.edge === 'right' ? w.x : w.y);
+      if (!w || Math.abs(at - r.wall.at) > 2) {
+        this.rim = null;
+        this.reorient('bottom');
+        this.startFall(true);
+        return;
+      }
+    }
     if (r.route.length) {
       const wp = r.route[0];
       if (wp.edge !== r.edge) {
@@ -557,7 +778,7 @@ export class World {
         r.route.shift();
         this.reorient(wp.edge);
       } else {
-        const step = RIM_PACE * this.k * s;
+        const step = (r.pace ?? RIM_PACE.trip) * this.k * s;
         const d = wp.s - r.s;
         if (Math.abs(d) <= step) {
           r.s = wp.s;
@@ -566,6 +787,7 @@ export class World {
           r.s += Math.sign(d) * step;
         }
       }
+      if (!r.route.length) r.stroll = false;
       if (!r.route.length && r.goal) {
         r.mode = r.goal;
         r.goal = null;
@@ -589,12 +811,53 @@ export class World {
       this.goHome();
       if (!this.rim) return;
     }
-    const pos = this.placeOn(r.edge, r.s, r.tuck);
+    const pos = this.placeOn(r.edge, r.s, r.tuck, r.wall);
     if (Math.abs(pos.x - this.win.x) > 0.3 || Math.abs(pos.y - this.win.y) > 0.3) {
       this.win.x = pos.x;
       this.win.y = pos.y;
       this.send();
     }
+  }
+
+  physicsStep(s) {
+    if (this.falling) {
+      for (const [type, speed, under] of airStep(this, s)) {
+        if (type === 'bounce' || type === 'wall') this.onBump?.(speed, type);
+        if (type === 'land') this.land(under, speed);
+      }
+      return;
+    }
+    for (const [type, speed] of slideStep(this, s)) {
+      if (type === 'wall') this.onBump?.(speed, type);
+      if (type === 'off') {
+        this.sliding = false;
+        this.falling = true;
+        this.vy = 0;
+        this.perch = null;
+      }
+      if (type === 'stop') {
+        this.sliding = false;
+        this.vx = 0;
+      }
+    }
+    const p = this.perch;
+    if (p?.kind === 'top') p.ox = this.win.x - p.sx;
+  }
+
+  // Touched down for good: stand on it, sliding on if still moving sideways.
+  land(under, speed) {
+    const k = this.k;
+    this.falling = false;
+    this.through = false;
+    this.vy = 0;
+    this.settle(under.y, under.id);
+    this.sliding = Math.abs(this.vx) > PHYS.slideMin * k;
+    if (!this.sliding) this.vx = 0;
+    this.onLand?.(speed, this.gentle);
+    this.gentle = false;
+    const next = this.afterLanding;
+    this.afterLanding = null;
+    next?.();
   }
 
   settle(y, id) {
@@ -606,10 +869,10 @@ export class World {
   // Twice a second: keep the pet on what it stands on. Windows that move carry it
   // along, windows that vanish drop it, and tired arms let go.
   watch() {
-    if (!this.canRoam || this.falling || this.flying || this.moving || this.rim) return;
+    if (!this.canRoam || this.falling || this.sliding || this.flying || this.moving || this.rim) return;
     const p = this.perch;
     if (p?.kind === 'side') {
-      if (performance.now() > p.until) return this.letGo();
+      if (this.clock > p.until) return this.letGo();
       if (!p.id) return;
       const s = this.surface(p.id);
       if (!s) return this.letGo();
@@ -652,6 +915,7 @@ export class World {
       this.target = null;
       return;
     }
+    this.clock += dt;
     const s = dt / 1000;
     if (this.rim) {
       this.rimTick(s);
@@ -668,21 +932,10 @@ export class World {
         this.startFall();
       }
       this.send();
-    } else if (this.falling) {
-      const { y, id } = this.support();
-      const rest = this.standOn(y);
-      this.vy += GRAVITY * this.k * s;
-      this.win.y = Math.min(rest, this.win.y + this.vy * s);
-      if (this.win.y >= rest) {
-        this.falling = false;
-        this.through = false;
-        this.vy = 0;
-        this.settle(y, id);
-        this.onLand?.();
-        const next = this.afterLanding;
-        this.afterLanding = null;
-        next?.();
-      }
+    } else if (this.falling || this.sliding) {
+      // Small fixed sub-steps keep bounces the same at any frame rate.
+      const n = Math.ceil(s / (1 / 120));
+      for (let i = 0; i < n && (this.falling || this.sliding); i++) this.physicsStep(s / n);
       this.send();
     } else if (this.target !== null) {
       const d = this.target - this.win.x;
@@ -690,6 +943,9 @@ export class World {
       if (Math.abs(d) <= step) {
         this.win.x = this.target;
         this.target = null;
+        const next = this.afterWalk;
+        this.afterWalk = null;
+        next?.();
       } else {
         this.win.x += Math.sign(d) * step;
       }

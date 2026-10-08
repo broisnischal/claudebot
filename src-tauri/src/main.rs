@@ -3,6 +3,7 @@
 mod config;
 mod desktop;
 mod hooks;
+mod notifications;
 mod server;
 mod voice;
 mod world;
@@ -128,6 +129,11 @@ fn move_window<R: Runtime>(window: WebviewWindow<R>, state: tauri::State<AppStat
 #[tauri::command]
 fn cursor<R: Runtime>(window: WebviewWindow<R>, state: tauri::State<AppState>) -> Option<world::Point> {
     world::cursor(state.backend, &window)
+}
+
+#[tauri::command]
+fn surfaces(state: tauri::State<AppState>) -> Vec<world::Surface> {
+    world::surfaces(state.backend)
 }
 
 #[tauri::command]
@@ -260,6 +266,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &CheckMenuItem::with_id(app, "roam", "Roam around the screen", true, config.roam, None::<&str>)?,
             &CheckMenuItem::with_id(app, "label", "Show status text", true, config.label, None::<&str>)?,
             &CheckMenuItem::with_id(app, "notify", "Notify when Claude is done", true, config.notify, None::<&str>)?,
+            &CheckMenuItem::with_id(app, "notify_react", "React to notifications", true, config.notify_react, None::<&str>)?,
+            &CheckMenuItem::with_id(app, "weather", "Show the weather", true, config.weather, None::<&str>)?,
             &size,
             &color,
             &CheckMenuItem::with_id(app, "top", "Always on top", true, config.always_on_top, None::<&str>)?,
@@ -334,6 +342,12 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
         "notify" => {
             update_config(app, |c| c.notify = !c.notify);
         }
+        "notify_react" => {
+            update_config(app, |c| c.notify_react = !c.notify_react);
+        }
+        "weather" => {
+            update_config(app, |c| c.weather = !c.weather);
+        }
         "autostart" => {
             let launcher = app.autolaunch();
             let _ = if launcher.is_enabled().unwrap_or(false) {
@@ -403,7 +417,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
-            get_config, fit_window, show_menu, log, world, move_window, cursor, set_hit_region, notify, set_status,
+            get_config, fit_window, show_menu, log, world, move_window, cursor, surfaces, set_hit_region, notify, set_status,
             voice_info, take_voice_commands, toggle_panel
         ])
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
@@ -448,6 +462,7 @@ fn main() {
                 .build(app)?;
 
             server::spawn(app.handle().clone(), port());
+            notifications::spawn(app.handle().clone());
             voice::spawn(app.handle().clone());
             let handle = app.handle().clone();
             app.listen_any("voice-status", move |_| refresh_tray(&handle));

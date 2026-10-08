@@ -37,6 +37,16 @@ pub struct Point {
     y: f64,
 }
 
+/// Another window the pet can stand on, cling to or hide behind.
+#[derive(Serialize)]
+pub struct Surface {
+    id: String,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
 pub fn detect() -> Backend {
     #[cfg(target_os = "linux")]
     {
@@ -92,6 +102,16 @@ pub fn cursor<R: Runtime>(backend: Backend, window: &WebviewWindow<R>) -> Option
         #[cfg(target_os = "linux")]
         Backend::Hyprland => hypr::cursor(),
         _ => None,
+    }
+}
+
+/// Windows the pet can land on, in the same coordinates as `world`. Only Hyprland
+/// reports them so far; elsewhere the pet has the floor and the screen edges.
+pub fn surfaces(backend: Backend) -> Vec<Surface> {
+    match backend {
+        #[cfg(target_os = "linux")]
+        Backend::Hyprland => hypr::surfaces(),
+        _ => vec![],
     }
 }
 
@@ -237,5 +257,39 @@ mod hypr {
     pub fn cursor() -> Option<Point> {
         let c = json("cursorpos")?;
         Some(Point { x: c["x"].as_f64()?, y: c["y"].as_f64()? })
+    }
+
+    /// Visible windows on the workspaces each monitor shows (plus pinned ones),
+    /// leaving out our own windows and anything fullscreen.
+    pub fn surfaces() -> Vec<super::Surface> {
+        let pid = std::process::id() as u64;
+        let showing: Vec<i64> = json("monitors")
+            .and_then(|m| m.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| m["activeWorkspace"]["id"].as_i64())
+            .collect();
+        let Some(clients) = json("clients") else { return vec![] };
+        clients
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| c["pid"].as_u64() != Some(pid))
+            .filter(|c| c["mapped"].as_bool() != Some(false) && c["hidden"].as_bool() != Some(true))
+            .filter(|c| c["fullscreen"].as_u64().unwrap_or(0) == 0 && c["fullscreen"].as_bool() != Some(true))
+            .filter(|c| {
+                c["pinned"].as_bool() == Some(true)
+                    || c["workspace"]["id"].as_i64().is_some_and(|id| showing.contains(&id))
+            })
+            .filter_map(|c| {
+                Some(super::Surface {
+                    id: c["address"].as_str()?.to_string(),
+                    x: c["at"][0].as_f64()?,
+                    y: c["at"][1].as_f64()?,
+                    w: c["size"][0].as_f64()?,
+                    h: c["size"][1].as_f64()?,
+                })
+            })
+            .collect()
     }
 }

@@ -36,6 +36,8 @@ export class VoicePet {
       else brain.flash('hello');
     });
     this.voice.on('pet', (m) => this.act(m.action));
+    // The pet reads desktop notifications out through the voice (its own quiet rules apply first).
+    brain.voiceAnnounce = (text) => this.voice.send({ type: 'announce', text: String(text).slice(0, 300) });
     const report = () => this.invoke?.('set_voice_enabled', { on: this.enabled }).catch(() => {});
     this.voice.on('hello', report);
     this.voice.on('settings', report);
@@ -43,14 +45,12 @@ export class VoicePet {
       if (e.key === 'v' && !e.ctrlKey && !e.metaKey && !e.altKey) this.voice.send({ type: 'voice', action: 'toggle' });
     });
 
-    this.stage = document.getElementById('stage');
-    this.canvas = document.createElement('canvas');
-    Object.assign(this.canvas.style, { position: 'fixed', left: '0', top: '0', pointerEvents: 'none' });
-    document.body.appendChild(this.canvas);
-    this.ctx = this.canvas.getContext('2d');
+    this.armed = false; // the press went down on the mic; its release talks, wherever the pet went
+    this.pressedAt = -1e9;
+    // levels and the mouth move at the display's rate; the button itself is drawn by main.js
     const loop = (now) => {
       requestAnimationFrame(loop);
-      this.frame(now);
+      this.update(now);
     };
     requestAnimationFrame(loop);
   }
@@ -85,12 +85,10 @@ export class VoicePet {
     else if (cmd.startsWith('say:')) v.send({ type: 'text', text: cmd.slice(4) });
   }
 
-  // A pet_action from the voice: fly, dance, sleep and the rest.
+  // A pet_action from the voice: fly, dance, hide, peek, a corner and the rest.
   act(name) {
     this.brain.lastActive = this.now;
     this.brain.play(name);
-    // Until the pet has a real flight, "fly" levitates it.
-    if (name === 'fly' && this.brain.act?.name !== 'fly') this.brain.play('think:space');
   }
 
   // ---- state ----
@@ -108,8 +106,14 @@ export class VoicePet {
     return this.now - this.hoverAt < HOVER_GRACE_MS;
   }
 
+  // Tucked behind a screen edge the button would be off screen too.
+  get tucked() {
+    const w = this.brain.world;
+    return !!(w?.rim && w.rim.tuck > 0.2);
+  }
+
   get visible() {
-    return this.hovered && this.S.engine !== 'unavailable';
+    return (this.hovered || this.armed) && !this.tucked && this.S.engine !== 'unavailable';
   }
 
   update(now) {
@@ -130,19 +134,25 @@ export class VoicePet {
 
   // ---- geometry, in stage units ----
 
-  // Diameter in units and the top-left corner: centred over the head, high enough to clear the
-  // hats and props the pet wears while it works.
+  // Diameter in units and the top-left corner, in stage units (main.js rotates the stage with the
+  // pet on the side and top edges, and the button rotates with it). Beside the body at mid height,
+  // left of the arm, or right of it near the stage's left edge: clear of the head, the thought
+  // bubble, the status pill and the hats, and anchored to where the pet stands, not to its hops.
   spot() {
     const d = CELLS / 2;
-    const cx = this.brain.x + SPRITE.w / 2;
-    return { x: cx - d / 2, y: STAND_Y - d - 4, d };
+    const y = STAND_Y + 4 - d / 2;
+    let x = Math.round(this.brain.x) - d - 0.5;
+    if (x < 0.5) x = Math.round(this.brain.x) + SPRITE.w + 0.5;
+    x = Math.max(0.5, Math.min(STAGE.w - d - 0.5, x));
+    return { x, y, d };
   }
 
-  // Only drawn things take clicks, so main.js adds this to the window's hit region.
+  // Only drawn things take clicks, so main.js adds this to the window's hit region. A unit of
+  // slack around the button so a slightly-off click still lands.
   rect() {
     if (!this.visible) return null;
     const { x, y, d } = this.spot();
-    return { x: Math.floor(x - 0.5), y: Math.floor(y - 0.5), w: Math.ceil(d + 1), h: Math.ceil(d + 1) };
+    return { x: Math.floor(x - 1), y: Math.floor(y - 1), w: Math.ceil(d + 2), h: Math.ceil(d + 2) };
   }
 
   inside(u) {
@@ -159,13 +169,33 @@ export class VoicePet {
 
   leave() {
     this.overButton = false;
+    this.armed = false; // dragged off the button before letting go: no click
   }
 
-  // A click that didn't drag. Returns true when the mic took it (no poke then). A tap on the pet
-  // stays a poke (it wakes the pet and acknowledges the "done" sign) and brings up the mic; two
-  // quick taps open the voice panel.
+  // Pointer down. True when it landed on the mic: the press is the mic's from here on (main.js
+  // starts no drag), shows pressed at once, and its release talks even if the pet moved under it.
+  down(u) {
+    if (!this.inside(u)) return false;
+    this.armed = true;
+    this.pressedAt = this.now;
+    return true;
+  }
+
+  // Pointer up. True when the mic took it.
+  up() {
+    if (!this.armed) return false;
+    this.armed = false;
+    this.hoverAt = this.now;
+    this.talk();
+    return true;
+  }
+
+  // A click on the pet that didn't drag. A tap stays a poke (it wakes the pet and acknowledges the
+  // "done" sign) and brings up the mic; two quick taps open the voice panel. Returns true when the
+  // mic took it instead (for main.js versions that don't call down() and up()).
   press(u) {
-    if (this.inside(u)) {
+    if (this.armed || this.inside(u)) {
+      this.armed = false;
       this.hoverAt = this.now;
       this.talk();
       return true;
@@ -209,28 +239,15 @@ export class VoicePet {
     return { icon: null, text: this.S.call ? 'Click the mic to hang up' : 'Click the mic to talk' };
   }
 
-  frame(now) {
-    this.update(now);
-    const { stage, canvas, ctx } = this;
-    if (canvas.width !== stage.width || canvas.height !== stage.height) {
-      canvas.width = stage.width;
-      canvas.height = stage.height;
-      canvas.style.width = stage.style.width;
-      canvas.style.height = stage.style.height;
-    }
-    if (!this.visible) {
-      if (this.drawn) ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.drawn = false;
-      return;
-    }
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    this.drawn = true;
-    const unit = canvas.width / STAGE.w; // device pixels per stage unit
-    const cell = Math.max(1, Math.round(unit / 2));
+  // Called by main.js inside its stage transform, after the pet is drawn.
+  draw(p) {
+    if (!this.visible) return;
     const { x, y, d } = this.spot();
-    const ox = Math.round((x + d / 2) * unit - (CELLS * cell) / 2);
-    const oy = Math.round((y + d / 2) * unit - (CELLS * cell) / 2);
+    const cell = Math.max(1, Math.round(p.px / 2));
+    const ox = Math.round(p.ox + (x + d / 2) * p.px - (CELLS * cell) / 2);
+    const oy = Math.round(p.oy + (y + d / 2) * p.px - (CELLS * cell) / 2);
     const phase = !this.enabled ? 'off' : this.S.call ? 'hangup' : 'idle';
-    drawOrb(ctx, ox, oy, cell, CELLS, { phase, now, hot: this.overButton });
+    const pressed = this.armed || this.now - this.pressedAt < 160;
+    drawOrb(p.ctx, ox, oy, cell, CELLS, { phase, now: this.now, hot: this.overButton || pressed, pressed });
   }
 }
