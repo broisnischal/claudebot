@@ -349,9 +349,9 @@ class Hub:
     def mark(self, stage: str, turn: int | None = None):
         """Timestamp a stage of the current request (the first time it happens)."""
         t = self.timing
-        if turn is not None and t.get("turn") != turn:
+        if (turn is not None and t.get("turn") != turn) or stage in t:
             return
-        t.setdefault(stage, time.monotonic())
+        t[stage] = time.monotonic()
         if stage == "first_audio" and "speech_end" in t:
             order = ["speech_end", "endpoint", "stt", "send", "first_token", "first_chunk", "tts", "first_audio"]
             seen = [s for s in order if s in t]

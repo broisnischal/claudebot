@@ -17,6 +17,12 @@ const TEXT = {
   thinking: 'Thinking', approval: 'Needs your OK', muted: 'Muted',
 };
 
+if (invoke) {
+  const report = (msg) => invoke('log', { message: `hud: ${msg}` }).catch(() => {});
+  addEventListener('error', (e) => report(`${e.message} at ${e.filename}:${e.lineno}`));
+  addEventListener('unhandledrejection', (e) => report(e.reason?.stack ?? e.reason));
+}
+
 const canvas = document.getElementById('hud');
 const ctx = canvas.getContext('2d');
 const voice = new Voice();
@@ -53,15 +59,7 @@ function frame(now) {
   const target = voice.loudness;
   level += (target - level) * (1 - Math.exp(-dt / (target > level ? 0.05 : 0.15)));
 
-  const want = busy() || music();
-  if (want !== shown) {
-    shown = want;
-    if (want) shownAt = now;
-    if (win) {
-      // each time it appears, back to the bottom-left corner of the right-hand screen
-      (want ? win.show().then(() => invoke?.('place_hud')) : win.hide()).catch(() => {});
-    }
-  }
+  const want = shown;
   const dpr = window.devicePixelRatio || 1;
   const W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
   if (canvas.width !== W || canvas.height !== H) {
@@ -105,6 +103,22 @@ function frame(now) {
     invoke('set_hit_region', r).catch(() => {});
   }
 }
+
+// A hidden window gets no animation frames, so showing and hiding runs on a plain timer.
+function visibility() {
+  const want = busy() || music();
+  if (want === shown) return;
+  shown = want;
+  if (want) shownAt = performance.now();
+  if (win) {
+    // each time it appears, back to the bottom-left corner of the right-hand screen
+    // (Hyprland maps the window a moment after show() returns, so place it again shortly after)
+    const place = () => invoke?.('place_hud').catch(() => {});
+    (want ? win.show().then(() => [0, 150, 500, 1200].forEach((ms) => setTimeout(place, ms))) : win.hide())
+      .catch((e) => invoke?.('log', { message: `hud: ${want ? 'show' : 'hide'} failed: ${e}` }));
+  }
+}
+setInterval(visibility, 150);
 
 canvas.addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
