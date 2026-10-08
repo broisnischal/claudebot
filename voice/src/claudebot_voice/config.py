@@ -27,16 +27,16 @@ MODELS_CHOICES = ["haiku", "sonnet", "opus"]
 DEFAULTS = {
     "enabled": True,  # off: no listening and no speaking at all, until I turn it back on
     "name": "Jarvis",
-    "model": "sonnet",
+    "model": "haiku",  # the fastest to its first word; sonnet and opus are a click away in the panel
     "voice": "jarvis",  # a blend of Kokoro's British male voices, see tts.py
-    "speed": 0.96,
+    "speed": 1.1,  # a little brisk, still clear
     "effect": "jarvis",  # jarvis: EQ, compression and a little room on the voice. clean: none.
     "volume": 0.8,
     "autonomy": "full",  # full: nothing asks but wiping the machine. trust: destructive shell asks. ask: side effects ask.
     "input": "handsfree",  # handsfree: voice activity detection. ptt: only while Space is held.
     "barge_in": True,  # talking over the assistant cuts it off
     "announce": True,  # speak up when an agent finishes or needs me
-    "endpoint_ms": 800,  # silence that ends an utterance
+    "endpoint_ms": 1100,  # silence that ends an utterance; patient, so a thinking pause doesn't end my turn
     "stt_model": "",  # empty: whatever voxtype's own config uses
     "input_device": "",  # empty: the system default
     "output_device": "",
@@ -57,7 +57,7 @@ EDITABLE = {
     "input": lambda v: v if v in ("handsfree", "ptt") else None,
     "barge_in": bool,
     "announce": bool,
-    "endpoint_ms": lambda v: min(2000, max(300, int(v))),
+    "endpoint_ms": lambda v: min(2500, max(400, int(v))),
     "stt_model": str,
     "input_device": str,
     "output_device": str,
@@ -79,6 +79,13 @@ class Settings(dict):
             except (OSError, ValueError):
                 continue
             s.update({k: v for k, v in saved.items() if k in DEFAULTS})
+            if saved.get("turns", 0) < 3:
+                # the old defaults: a pause that answered half-finished questions, a slower model and voice
+                for key, old in (("endpoint_ms", 800), ("model", "sonnet"), ("speed", 0.96)):
+                    if saved.get(key) == old:
+                        s[key] = DEFAULTS[key]
+                s["turns"] = 3
+                s.save()
             if path == LEGACY_SETTINGS:
                 s.save()  # carried over once; from here on claudebot keeps its own copy
             break

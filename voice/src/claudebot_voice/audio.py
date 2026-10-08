@@ -167,11 +167,14 @@ class Device:
         self.zi = np.zeros(len(LOWPASS) - 1)
         self.phase = 0
         self.mic_level = 0.0
-        self.out_level = 0.0
+        self.out_level = 0.0  # the voice alone, for the orb
+        self.total_level = 0.0  # everything the speaker plays, music too: what can echo back
         self.playing_turn = None
         self.idle_since = 0.0
         self.error = ""
         self.duck = False  # the hub sets it while either of us talks
+        self.paused = False  # held during a barge-in, until it is either confirmed or a false alarm
+        self.fade = None  # "pause" or "stop": fade the next block out, then act
         self.music_gain = 0.0
 
     # ---- playback queue (loop thread) ----
@@ -182,13 +185,39 @@ class Device:
         self.reconcile()
 
     def stop(self):
+        """Drop everything queued. The block already on its way out fades over 10 ms instead of
+        clicking off mid-word."""
         with self.lock:
-            self.queue.clear()
-            was = self.playing_turn
-            self.playing_turn = None
-            self.idle_since = time.monotonic()
+            live = self.stream is not None and bool(self.queue) and not self.paused
+            if live:
+                self.fade = "stop"
+            else:
+                self.queue.clear()
+            self.paused = False
+            was = None if live else self.playing_turn
+            if not live:
+                self.playing_turn = None
+                self.idle_since = time.monotonic()
         if was is not None:
             self.loop.call_soon_threadsafe(self.on_play, "idle", was, "")
+
+    def pause(self):
+        """Hold the voice while I talk over it. The current sentence fades out and will start
+        again from its beginning on resume(); the rest of the queue waits."""
+        with self.lock:
+            if self.paused:
+                return
+            self.paused = True
+            if self.queue and self.stream is not None:
+                self.fade = "pause"
+            elif self.queue:
+                self.queue[0][3] = 0
+
+    def resume(self):
+        with self.lock:
+            self.paused = False
+            if self.fade == "pause":
+                self.fade = None
 
     @property
     def busy(self) -> bool:
@@ -267,7 +296,9 @@ class Device:
         filled = 0
         started = None
         with self.lock:
-            while filled < frames and self.queue:
+            fade, self.fade = self.fade, None
+            held = self.paused and not fade
+            while filled < frames and self.queue and not held:
                 item = self.queue[0]
                 turn, samples, text, pos = item
                 if pos == 0:
@@ -278,17 +309,25 @@ class Device:
                 item[3] = pos + take
                 if item[3] >= len(samples):
                     self.queue.popleft()
+            if fade == "pause" and self.queue:
+                self.queue[0][3] = 0  # resume repeats the cut sentence whole
+            elif fade == "stop":
+                self.queue.clear()
             empty = not self.queue
             playing = self.playing_turn
-            if started:
+            if started and fade != "stop":
                 self.playing_turn = started[0]
-            elif empty and filled == 0 and playing is not None:
+            elif started:
+                started = None
+            elif empty and filled == 0 and playing is not None and not held:
                 self.playing_turn = None
         if started:
             self.loop.call_soon_threadsafe(self.on_play, "start", started[0], started[1])
-        elif empty and filled == 0 and playing is not None:
+        elif empty and filled == 0 and playing is not None and not held:
             self.idle_since = time.monotonic()
             self.loop.call_soon_threadsafe(self.on_play, "idle", playing, "")
+        if fade:
+            out *= np.linspace(1, 0, frames, dtype=np.float32)
         out *= float(self.settings.get("volume", 0.8))
         self.out_level = float(np.sqrt(np.mean(out**2)))
         music = self.music.take(frames)
@@ -300,6 +339,7 @@ class Device:
             g1 = g0 + (target - g0) * (0.15 if target < g0 else 0.03)
             self.music_gain = g1
             out += music * np.linspace(g0, g1, frames, dtype=np.float32)
+        self.total_level = float(np.sqrt(np.mean(out**2)))
         return (np.clip(out, -1, 1) * 32767).astype(np.int16)
 
     def _output(self, outdata, frames, time_info, status):

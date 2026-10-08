@@ -3,6 +3,7 @@
 from collections import OrderedDict
 
 import numpy as np
+import onnxruntime as ort
 from kokoro_onnx import Kokoro
 
 from .config import MODELS
@@ -15,7 +16,14 @@ BLENDS = {"jarvis": {"bm_george": 0.5, "bm_fable": 0.3, "bm_lewis": 0.2}}
 
 class TTS:
     def __init__(self):
-        self.kokoro = Kokoro(str(MODELS / "kokoro-v1.0.onnx"), str(MODELS / "voices-v1.0.bin"))
+        # 6 threads measured fastest on this 8-core CPU (16 contended with whisper and the audio callback)
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 6
+        opts.inter_op_num_threads = 1
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        session = ort.InferenceSession(str(MODELS / "kokoro-v1.0.onnx"), sess_options=opts,
+                                       providers=["CPUExecutionProvider"])
+        self.kokoro = Kokoro.from_session(session, str(MODELS / "voices-v1.0.bin"))
         self.cache: OrderedDict[tuple, bytes] = OrderedDict()
 
     def voices(self) -> list[str]:

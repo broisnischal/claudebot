@@ -19,13 +19,23 @@ def speakable(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+CLAUSE = re.compile(r"(?<=[,;:])\s+")
+# The first piece is what I wait for, and synthesis time grows with its length: it goes out at the
+# first clause break after a few words, or at a word break once it runs long without one.
+FIRST_WORDS = 4
+FIRST_MAX_WORDS = 12
+WEAK = re.compile(r"^(the|a|an|of|to|for|in|on|at|by|with|from|and|or|but|is|are|was|my|your|its|their|this|that)$", re.I)
+
+
 class Chunker:
-    """Feed it text deltas, get back whole sentences. Code blocks are dropped."""
+    """Feed it text deltas, get back whole sentences. Code blocks are dropped. The very first piece may
+    be a clause ("It's Thursday,") so the first word is heard while the rest is still being written."""
 
     def __init__(self):
         self.raw = ""
         self.buf = ""
         self.in_code = False
+        self.first = True
 
     def feed(self, delta: str) -> list[str]:
         self.raw += delta
@@ -57,6 +67,19 @@ class Chunker:
         out = []
         while True:
             m = BOUNDARY.search(self.buf)
+            if self.first:
+                # the earliest of: the sentence end, a clause break after a few words, the word cap
+                options = [m] if m else []
+                c = next((c for c in CLAUSE.finditer(self.buf) if len(self.buf[: c.start()].split()) >= FIRST_WORDS), None)
+                if c:
+                    options.append(c)
+                words = list(re.finditer(r"\S+\s+", self.buf))
+                if len(words) > FIRST_MAX_WORDS:
+                    # break after a word that doesn't leave the phrase hanging ("for the | UI")
+                    cut = next((w for w in reversed(words[FIRST_WORDS - 1:FIRST_MAX_WORDS])
+                                if not WEAK.match(w.group().strip())), words[FIRST_MAX_WORDS - 1])
+                    options.append(cut)
+                m = min(options, key=lambda x: x.end()) if options else None
             if m:
                 piece, self.buf = self.buf[: m.end()], self.buf[m.end() :]
             elif len(self.buf) > LONG:
@@ -72,4 +95,5 @@ class Chunker:
             text = speakable(piece)
             if any(c.isalnum() for c in text):
                 out.append(text)
+                self.first = False
         return out

@@ -12,6 +12,7 @@ dependencies = [
     "kokoro-onnx>=0.6.1",
     "livekit>=1.0",
     "numpy>=2.5.3",
+    "pywhispercpp>=1.5.1",
     "scipy>=1.14",
     "sounddevice>=0.5",
     "uvicorn[standard]>=0.54.0",

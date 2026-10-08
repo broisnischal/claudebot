@@ -40,36 +40,27 @@ PC_STATUS = {"screenshot": "Looking at the screen", "windows": "Checking windows
              "switch_workspace": "Switching workspace", "wait_for": "Waiting"}
 BUILTIN_TOOLS = ["Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch", "Write", "Edit"]
 
-SYSTEM = """You are {name}, the voice of my Linux workstation ({host}: Arch Linux, Hyprland, tmux). I talk to you out loud. My words reach you through speech to text, and everything you write is read aloud by a text to speech voice.
+SYSTEM = """You are {name}, the voice of my Linux workstation ({host}: Arch Linux, Hyprland, tmux). I talk to you out loud through speech to text, and everything you write is spoken by a text to speech voice.
 
-How to talk:
-- Plain spoken sentences only. No markdown, lists, headings, code blocks, tables, emoji or URLs.
-- Short: answer only what I asked, in one or two sentences, unless I ask for more. If something urgent stands out, add one short sentence. Lead with the answer.
-- Never read out code, long paths, hashes, IDs or raw logs. Say what they mean.
-- Never narrate what you are about to do or are doing ("Checking.", "Looking.", "On it.", "Let me see."). The screen already shows your status. Stay quiet while you work and speak only the answer.
-- Speech to text mishears words, names most of all. Read my words generously: "Claudia Bot" is probably the agent claudebot, "tower" may arrive as "tau er".
-- Dry, quick and calm, like a good chief of staff. No filler, no apologies, no "great question".
+How to answer:
+- Lead with the answer. One spoken sentence by default, two at most, unless I ask for more.
+- Plain spoken words only: no markdown, lists, code, emoji, URLs, paths, hashes or IDs. Say what things mean.
+- Answer directly from what you know whenever no live state is needed: small talk, facts, arithmetic, definitions, the date. Use a tool only when the answer depends on my agents, my machine, my files or the web.
+- Never narrate your work ("Checking.", "On it.", "Let me see."): the screen shows your status. Work quietly, then answer.
+- Never repeat something you already said. If a tool fails twice, stop and tell me in one sentence.
+- Speech to text mishears names: "Claudia Bot" is probably the agent claudebot, "tau er" is tower.
+- Dry, quick and calm, like a good chief of staff. No filler, no apologies.
 
 What you run:
-- The fleet: Claude Code agents in my tmux panes, managed by tower. Use the fleet tools for anything about what agents are doing, what they said, or handing them work. When you report, name each agent and say in plain words what it is working on, inferred from its task and current activity. "waiting" means it is blocked on me (a permission prompt or a question). "done" means it finished and I have not looked yet. Mention idle agents only when I ask about everything.
-- My desktop and machine through the pc tools, exactly like Claude Code does: screenshots, windows, apps, keyboard and mouse, processes, services, logs. When I ask you to do something on my computer, do it yourself with the pc tools (orient, look, act, check) instead of telling me how. Say one short line when it is done.
-- A shell, files, and the web (WebSearch, WebFetch) for research. Give every Bash call a short description.
+- The fleet: Claude Code agents in my tmux panes, through the fleet tools (tower). Name each agent and say in plain words what it is doing. "waiting" means blocked on me; "done" means finished and unread. Mention idle agents only if I ask about everything.
+- My desktop through the pc tools, like Claude Code does: do things yourself instead of telling me how, and say one short line when done. Orient with windows (cheap text), screenshot only when you need to see or need coordinates (x and y are pixels of the latest screenshot; aim at the middle of a control). Prefer press_keys and paste_text (pass window= to target one) over clicks, chain known steps in one act call, wait_for instead of sleeping. system_state first for questions about the machine. Never click through consent, payment or destructive dialogs on your own; if I say stop, call input_disable.
+- A shell, files and the web. Give every Bash call a short description.
+- Shortcuts: open_url with the final URL for any site or search; music_play and music_control for music (it plays here, under your voice, and ducks while either of us talks; pick a sensible query when I'm vague); play_youtube for a video to watch; open_app for apps.
+- You live in Claude Bot, the pixel creature on my screen. pet_action makes it act things out (fly, dance, hide, peek, sleep, wave...). When I ask for one, call it and answer in a word or two.
 
-Be fast on the desktop. Every tool call costs me a second or two of waiting, so take the shortest path:
-- Websites and searches: open_url with the final URL (a search results URL, a maps URL, a docs page). Never type a URL or a search into a browser by hand.
-- Music: music_play with a search query (an artist, a song, a mood like "lo-fi beats"). It plays through my speakers right here, under your voice, and fades down while either of us talks. music_control pauses, resumes, skips or stops it. Pick a sensible query yourself when I am vague ("play some music").
-- A video I want to watch: play_youtube, which opens it in my browser.
-- You live in Claude Bot, the little pixel creature on my screen. pet_action makes it act things out: fly, dance, wave, sleep, celebrate, zoomies, sit and the rest. When I ask you or the pet to do one of those, call it and answer in a word or two at most.
-- Apps: open_app, or Bash with the command, instead of clicking through launchers.
-- Keys over clicks. Chain known steps in one act call. Use paste_text for anything longer than a few words; type_text can drop characters in busy apps.
-- Skip a screenshot when the result is predictable. Look only when you need coordinates or need to confirm something that could have failed.
-- Act right away. Do not describe a plan, do not ask "want me to", just do it and tell me when it is done.
-
-Permissions: risky actions pass through an approval step that asks me out loud. Do not ask me for confirmation yourself, just call the tool. If I deny something, accept it and carry on.
-
-A message may begin with a bracketed note listing fleet events since my last message. Bring them up only when relevant.
+Risky actions go through an approval I answer out loud; don't ask me yourself, just call the tool, and accept a no. A message may start with a bracketed note of fleet events since my last message; mention them only when relevant.
 {memory}
-It is {date}. My home folder is {home}. Work from there unless I say otherwise.{pc_skill}"""
+It is {date}. My home folder is {home}."""
 
 
 MEMORY = """
@@ -86,7 +77,10 @@ What you remember so far:
 # Everything the pet in Claude Bot can act out (what brain.play accepts in src/brain.js), and the
 # words I am likely to use for them.
 PET = {
-    "moves": ["fly", "dance", "walk", "zoomies", "chase", "hop", "wave", "sit", "stretch", "yawn", "trip", "sneeze", "look"],
+    "moves": ["fly", "dance", "walk", "zoomies", "chase", "hop", "wave", "sit", "stretch", "yawn", "trip", "sneeze", "look",
+              "drop", "throw", "explore"],
+    "gestures": ["stones", "kick", "juggle", "flex", "kiss"],
+    "screens": ["monitor:other", "monitor:left", "monitor:right", "split"],
     "reactions": ["hello", "celebrate", "dizzy", "shrug", "oops", "giggle", "poke", "notice", "remind"],
     "scenes": ["idle", "sleeping", "thinking", "building", "testing", "typing", "reading", "searching", "surfing",
                "planning", "delegating", "alert", "waiting", "done", "compacting", "error", "agent"],
@@ -109,6 +103,11 @@ PET_WORDS = {
     "think": "thinking", "fall over": "trip", "trip over": "trip", "subagent": "agent", "helper": "agent",
     "hide away": "hide", "go hide": "hide", "peek out": "peek", "come out": "peek", "come back": "home",
     "come home": "home", "go home": "home", "back to the floor": "home",
+    "fall": "drop", "fall down": "drop", "toss": "throw", "throw yourself": "throw", "throw stones": "stones",
+    "skip stones": "stones", "kick the ball": "kick", "kick a ball": "kick", "play football": "kick",
+    "show your muscles": "flex", "blow a kiss": "kiss", "blow me a kiss": "kiss", "go explore": "explore",
+    "other screen": "monitor:other", "other monitor": "monitor:other", "left screen": "monitor:left",
+    "left monitor": "monitor:left", "right screen": "monitor:right", "right monitor": "monitor:right",
 }
 SIDES = {"left": "left", "right": "right", "top": "top", "up": "top", "bottom": "bottom", "down": "bottom"}
 
@@ -148,17 +147,6 @@ def pc_root() -> Path | None:
 def pc_binary() -> str | None:
     root = pc_root()
     return str(root / "bin" / "pc") if root else shutil.which("pc")
-
-
-def pc_skill() -> str:
-    """The pc plugin's skill, inlined so driving the desktop needs no Skill round trip."""
-    root = pc_root()
-    try:
-        text = (root / "skills" / "pc" / "SKILL.md").read_text() if root else ""
-    except OSError:
-        return ""
-    body = text.split("---", 2)[-1].strip() if text.startswith("---") else text
-    return "\n\nHow to use the pc tools (from the pc plugin's skill; the CLI parts apply to Bash):\n\n" + body
 
 
 TRUST = re.compile(r"trust this folder|one you trust", re.I)
@@ -251,7 +239,7 @@ class Brain:
             model=s["model"],
             system_prompt=SYSTEM.format(
                 name=s["name"], host=socket.gethostname(), home=str(Path.home()),
-                date=time.strftime("%A %-d %B %Y"), pc_skill=pc_skill(), memory=self._memory_block(),
+                date=time.strftime("%A %-d %B %Y"), memory=self._memory_block(),
             ),
             tools=BUILTIN_TOOLS,
             mcp_servers=servers,
@@ -350,10 +338,18 @@ class Brain:
         async with self.lock:
             self.busy = True
             chunker = Chunker()
+            said: set[str] = set()
+            self.last_event = time.monotonic()
+            watchdog = asyncio.create_task(self._watch(turn_id))
 
             def speak(parts):
                 for part in parts:
+                    key = re.sub(r"\W+", " ", part.lower()).strip()
+                    if key in said:
+                        continue  # never say the same sentence twice in one answer
+                    said.add(key)
                     if not FILLER.match(part.strip()):
+                        hub.mark("first_chunk", turn_id)
                         hub.say(part, turn_id)
 
             try:
@@ -364,12 +360,14 @@ class Brain:
                     self.notes.clear()
                 await self.client.query(prompt)
                 async for m in self.client.receive_response():
+                    self.last_event = time.monotonic()
                     if isinstance(m, StreamEvent):
                         if m.parent_tool_use_id:
                             continue
                         ev = m.event
                         kind = ev.get("type")
                         if kind == "content_block_delta" and ev["delta"].get("type") == "text_delta":
+                            hub.mark("first_token", turn_id)
                             speak(chunker.feed(ev["delta"]["text"]))
                         elif kind == "content_block_start" and ev.get("content_block", {}).get("type") == "tool_use":
                             speak(chunker.flush())
@@ -382,7 +380,7 @@ class Brain:
                             continue
                         for block in m.content:
                             if isinstance(block, TextBlock) and block.text.strip():
-                                hub.log("assistant", block.text.strip())
+                                hub.reply(turn_id, block.text.strip())
                             elif isinstance(block, ToolUseBlock):
                                 hub.log("tool", f"{block.name.removeprefix('mcp__').replace('__', ' ')}  {brief(block.input)}")
                                 hub.tool(block.name, status(block.name, block.input))
@@ -399,8 +397,22 @@ class Brain:
                 hub.log("system", f"Claude error: {e}")
                 hub.say("Something broke on my side. Try that again.", turn_id)
             finally:
+                watchdog.cancel()
                 self.busy = False
                 hub.tool("", "")
+
+    async def _watch(self, turn_id: int, limit: float = 90.0):
+        """A turn that goes quiet for this long (no stream event at all, and not waiting on my
+        approval) is stuck: stop it and say so, instead of leaving me in silence."""
+        while True:
+            await asyncio.sleep(5)
+            if self.hub.approval:
+                self.last_event = time.monotonic()
+            elif time.monotonic() - self.last_event > limit:
+                log.warning("turn %s stalled for %.0fs, interrupting", turn_id, limit)
+                await self.interrupt()
+                self.hub.say("That got stuck, so I stopped it.", turn_id)
+                return
 
     # ---- fleet tools ---------------------------------------------------------------------
 
