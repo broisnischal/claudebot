@@ -30,6 +30,10 @@ from .speech import Chunker
 log = logging.getLogger("claudebot_voice.brain")
 SESSION_FILE = RUNTIME_DIR / "session"
 
+# A fresh session starts before the conversation gets near the model's 200k context. Screenshots
+# fill it fast, and a full context makes every turn fail with "Prompt is too long".
+ROTATE_AT = 130_000
+
 # Status lines belong on screen, not in my ears: the pet and the panel show what is going on.
 FILLER = re.compile(r"^(ok(ay)?[,.]? )?(checking|looking|on it|one sec(ond)?|one moment|hang on|working on it|"
                     r"let me (check|look|see)( that| into that)?|give me a (sec|second|moment))\W*$", re.I)
@@ -56,7 +60,8 @@ What you run:
 - My desktop through the pc tools, like Claude Code does: do things yourself instead of telling me how, and say one short line when done. Orient with windows (cheap text), screenshot only when you need to see or need coordinates (x and y are pixels of the latest screenshot; aim at the middle of a control). Prefer press_keys and paste_text (pass window= to target one) over clicks, chain known steps in one act call, wait_for instead of sleeping. system_state first for questions about the machine. Never click through consent, payment or destructive dialogs on your own; if I say stop, call input_disable.
 - A shell, files and the web. Give every Bash call a short description.
 - Shortcuts: open_url with the final URL for any site or search; music_play and music_control for music (it plays here, under your voice, and ducks while either of us talks; pick a sensible query when I'm vague); play_youtube for a video to watch; open_app for apps.
-- You live in Claude Bot, the pixel creature on my screen. pet_action makes it act things out (fly, dance, hide, peek, sleep, wave...). When I ask for one, call it and answer in a word or two.
+- You live in Claude Bot, the pixel creature on my screen, so you and the pet are the same: "fly", "dance", "hide" and the like, said to you or to the pet, mean pet_action. Don't ask, do it, and answer in a word or two.
+- Screenshots fill your memory fast: orient with windows first, and take a low-detail screenshot unless you must read small text.
 
 Risky actions go through an approval I answer out loud; don't ask me yourself, just call the tool, and accept a no. A message may start with a bracketed note of fleet events since my last message; mention them only when relevant.
 {memory}
@@ -223,6 +228,7 @@ class Brain:
         self.connecting = asyncio.Lock()
         self.notes: list[str] = []
         self.busy = False
+        self.context_tokens = 0  # how full the session's context was on its last API call
         self.session_id = ""
         self.cost = 0.0
         self.server = create_sdk_mcp_server(name="jarvis", version="1.0.0", tools=self._tools())
@@ -333,6 +339,26 @@ class Brain:
 
     # ---- one turn ------------------------------------------------------------------------
 
+    async def _fresh(self, why: str):
+        """Drop the session and start a new one (long-term memory comes back through the prompt)."""
+        log.warning("starting a fresh claude session: %s", why)
+        await self.close()
+        self.session_id = ""
+        self.context_tokens = 0
+        SESSION_FILE.unlink(missing_ok=True)
+
+    def _recap(self) -> str:
+        """The last few exchanges, so a fresh session can pick up the thread."""
+        lines = []
+        for e in list(self.hub.history)[-24:]:
+            if e["role"] in ("user", "assistant") and not e.get("cut"):
+                who = "Me" if e["role"] == "user" else "You"
+                lines.append(f"{who}: {e['text'][:300]}")
+        text = "\n".join(lines[-10:])[-2500:]
+        if not text:
+            return ""
+        return "[This is a fresh session; the earlier one ran out of room. The last few exchanges were:\n" + text + "]\n"
+
     async def turn(self, text: str, turn_id: int):
         hub = self.hub
         async with self.lock:
@@ -353,43 +379,24 @@ class Brain:
                         hub.say(part, turn_id)
 
             try:
-                await self.connect()
                 prompt = text
                 if self.notes:
                     prompt = "[fleet events since my last message: " + " ".join(self.notes) + "]\n" + text
                     self.notes.clear()
-                await self.client.query(prompt)
-                async for m in self.client.receive_response():
-                    self.last_event = time.monotonic()
-                    if isinstance(m, StreamEvent):
-                        if m.parent_tool_use_id:
-                            continue
-                        ev = m.event
-                        kind = ev.get("type")
-                        if kind == "content_block_delta" and ev["delta"].get("type") == "text_delta":
-                            hub.mark("first_token", turn_id)
-                            speak(chunker.feed(ev["delta"]["text"]))
-                        elif kind == "content_block_start" and ev.get("content_block", {}).get("type") == "tool_use":
-                            speak(chunker.flush())
-                            name = ev["content_block"].get("name", "")
-                            hub.tool(name, status(name, {}))
-                        elif kind in ("content_block_stop", "message_stop"):
-                            speak(chunker.flush())
-                    elif isinstance(m, AssistantMessage):
-                        if m.parent_tool_use_id:
-                            continue
-                        for block in m.content:
-                            if isinstance(block, TextBlock) and block.text.strip():
-                                hub.reply(turn_id, block.text.strip())
-                            elif isinstance(block, ToolUseBlock):
-                                hub.log("tool", f"{block.name.removeprefix('mcp__').replace('__', ' ')}  {brief(block.input)}")
-                                hub.tool(block.name, status(block.name, block.input))
-                    elif isinstance(m, ResultMessage):
-                        self._save_session(m.session_id)
-                        self.session_id = m.session_id
-                        self.cost = m.total_cost_usd or self.cost
-                        if m.is_error and m.subtype not in ("error_during_execution",):
-                            hub.log("system", f"turn ended: {m.subtype}")
+                if self.context_tokens > ROTATE_AT:
+                    await self._fresh(f"context at {self.context_tokens} tokens")
+                    prompt = self._recap() + prompt
+                for attempt in (1, 2):
+                    await self.connect()
+                    overflow = await self._ask(prompt, turn_id, speak, chunker)
+                    if not overflow:
+                        break
+                    if attempt == 2:
+                        hub.say("My memory of this conversation is full and I couldn't start over. Try again.", turn_id)
+                        break
+                    # the context is full and every turn would fail from here on: start over and retry
+                    await self._fresh("prompt is too long")
+                    prompt = self._recap() + prompt
                 speak(chunker.flush())
             except Exception as e:
                 log.exception("turn failed")
@@ -400,6 +407,54 @@ class Brain:
                 watchdog.cancel()
                 self.busy = False
                 hub.tool("", "")
+
+    async def _ask(self, prompt: str, turn_id: int, speak, chunker) -> bool:
+        """One query and its streamed answer. True when the session's context was full."""
+        hub = self.hub
+        overflow = False
+        await self.client.query(prompt)
+        async for m in self.client.receive_response():
+            self.last_event = time.monotonic()
+            if isinstance(m, StreamEvent):
+                if m.parent_tool_use_id:
+                    continue
+                ev = m.event
+                kind = ev.get("type")
+                if kind == "message_start":
+                    u = (ev.get("message") or {}).get("usage") or {}
+                    self.context_tokens = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                                           + u.get("cache_creation_input_tokens", 0))
+                elif kind == "content_block_delta" and ev["delta"].get("type") == "text_delta":
+                    hub.mark("first_token", turn_id)
+                    speak(chunker.feed(ev["delta"]["text"]))
+                elif kind == "content_block_start" and ev.get("content_block", {}).get("type") == "tool_use":
+                    speak(chunker.flush())
+                    name = ev["content_block"].get("name", "")
+                    hub.tool(name, status(name, {}))
+                elif kind in ("content_block_stop", "message_stop"):
+                    speak(chunker.flush())
+            elif isinstance(m, AssistantMessage):
+                if m.parent_tool_use_id or getattr(m, "error", None):
+                    continue  # a subagent's turn, or an API error dressed as a reply
+                for block in m.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        hub.reply(turn_id, block.text.strip())
+                    elif isinstance(block, ToolUseBlock):
+                        hub.log("tool", f"{block.name.removeprefix('mcp__').replace('__', ' ')}  {brief(block.input)}")
+                        hub.tool(block.name, status(block.name, block.input))
+            elif isinstance(m, ResultMessage):
+                self._save_session(m.session_id)
+                self.session_id = m.session_id
+                self.cost = m.total_cost_usd or self.cost
+                if m.is_error and "too long" in (m.result or "").lower():
+                    overflow = True
+                elif m.is_error and m.subtype not in ("error_during_execution",):
+                    # never fail in silence: say so, and keep the reason in the transcript
+                    reason = (m.result or m.subtype or "").strip()[:200]
+                    hub.log("system", f"turn failed: {reason}")
+                    log.warning("turn failed: %s", reason)
+                    hub.say("That didn't work on my side. Try again.", turn_id)
+        return overflow
 
     async def _watch(self, turn_id: int, limit: float = 90.0):
         """A turn that goes quiet for this long (no stream event at all, and not waiting on my
