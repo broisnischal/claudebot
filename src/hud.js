@@ -41,7 +41,8 @@ function label() {
   if (S.phase === 'speaking') return { text: caption || 'Speaking' };
   if (S.phase === 'approval') return { text: S.approval?.title || TEXT.approval, color: '#FF8A8A' };
   if (S.phase === 'thinking') return { text: S.tool || TEXT.thinking, spin: true };
-  if (S.phase === 'transcribing') return { text: TEXT.transcribing, spin: true };
+  if (S.phase === 'transcribing') return { text: S.partial || TEXT.transcribing, spin: true };
+  if (S.phase === 'hearing' && S.partial) return { text: S.partial }; // my words, as I say them
   return { text: TEXT[S.phase] || TEXT.listening };
 }
 
@@ -56,7 +57,10 @@ function frame(now) {
   if (want !== shown) {
     shown = want;
     if (want) shownAt = now;
-    if (win) (want ? win.show() : win.hide()).catch(() => {});
+    if (win) {
+      // each time it appears, back to the bottom-left corner of the right-hand screen
+      (want ? win.show().then(() => invoke?.('place_hud')) : win.hide()).catch(() => {});
+    }
   }
   const dpr = window.devicePixelRatio || 1;
   const W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);

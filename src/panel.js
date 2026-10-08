@@ -50,6 +50,16 @@ voice.on('caption', (m) => setCaption(m.text));
 voice.on('heard', (m) => {
   ui.heard.textContent = `“${m.text}”`;
   setCaption('');
+  livePartial(null);
+});
+// My words as I say them: a provisional line in the conversation, replaced by the final one.
+voice.on('partial', (m) => {
+  if (m.text) ui.heard.textContent = `“${m.text}”`;
+  livePartial(m.text || null);
+});
+// A reply I talked over: its lines stay, marked as cut off.
+voice.on('cut', (m) => {
+  for (const el of ui.log.querySelectorAll(`.entry[data-turn="${m.turn}"][data-role="assistant"]`)) el.classList.add('cut');
 });
 voice.on('tool', () => render());
 voice.on('log', (m) => {
@@ -174,11 +184,30 @@ function renderFleet() {
 
 const WHO = { user: 'You', assistant: () => S.settings.name || 'Jarvis', tool: 'tool', system: 'system', event: 'fleet', approval: 'approval' };
 
+let partialEl = null;
+function livePartial(text) {
+  if (!text) {
+    partialEl?.remove();
+    partialEl = null;
+    return;
+  }
+  const pinned = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 40;
+  if (!partialEl) {
+    partialEl = h('div', { class: 'entry partial', 'data-role': 'user' }, h('span', { class: 'who' }, 'You'), h('p', {}), h('time', {}, 'now'));
+  }
+  partialEl.querySelector('p').textContent = text;
+  ui.log.append(partialEl); // keep it last
+  if (pinned) ui.log.scrollTop = ui.log.scrollHeight;
+}
+
 function addEntry(e) {
   const pinned = ui.log.scrollHeight - ui.log.scrollTop - ui.log.clientHeight < 40;
   const who = typeof WHO[e.role] === 'function' ? WHO[e.role]() : WHO[e.role] || e.role;
   const time = new Date(e.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  ui.log.append(h('div', { class: 'entry', 'data-role': e.role }, h('span', { class: 'who' }, who), h('p', {}, e.text), h('time', {}, time)));
+  const attrs = { class: `entry${e.cut ? ' cut' : ''}`, 'data-role': e.role };
+  if (e.turn !== undefined) attrs['data-turn'] = String(e.turn);
+  ui.log.append(h('div', attrs, h('span', { class: 'who' }, who), h('p', {}, e.text), h('time', {}, time)));
+  if (partialEl) ui.log.append(partialEl);
   while (ui.log.childElementCount > 300) ui.log.firstElementChild.remove();
   if (pinned) ui.log.scrollTop = ui.log.scrollHeight;
 }

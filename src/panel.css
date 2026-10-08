@@ -481,3 +481,11 @@ body.has-music .drawer { max-height: min(56vh, 560px); }
 .voice-toggle[aria-pressed="false"] .voice-dot { background: #6e6a64; box-shadow: none; }
 body.voice-off #orb { opacity: 0.35; }
 body.voice-off #btn-mic { opacity: 0.4; pointer-events: none; }
+
+/* my words while I'm still talking, and replies I talked over */
+.entry.partial p { color: var(--ink-3); font-style: italic; }
+.entry.cut p { color: var(--ink-3); }
+.entry.cut p::after {
+  content: "cut off"; margin-left: 8px; padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--line); font: 10px/1.6 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3);
+}

@@ -27,6 +27,24 @@
         "focus": false,
         "acceptFirstMouse": true,
         "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "hud",
+        "title": "Claude Bot HUD",
+        "url": "hud.html",
+        "width": 300,
+        "height": 26,
+        "resizable": true,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "acceptFirstMouse": true,
+        "visibleOnAllWorkspaces": true
       }
     ],
     "security": {

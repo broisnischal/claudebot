@@ -1,16 +1,18 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the pet and the voice panel are allowed to do",
+  "description": "What the pet, the voice panel and the voice HUD are allowed to do",
   "windows": [
     "main",
-    "panel"
+    "panel",
+    "hud"
   ],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-show",
     "core:window:allow-close",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "core:window:allow-hide"
   ]
 }

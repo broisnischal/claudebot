@@ -180,6 +180,20 @@ fn take_voice_commands(voice: tauri::State<voice::Voice>) -> Vec<String> {
     std::mem::take(&mut *voice.pending.lock().unwrap())
 }
 
+/// The HUD asks to be put in its corner each time it shows (monitors may have changed meanwhile).
+#[tauri::command]
+fn place_hud<R: Runtime>(window: WebviewWindow<R>) -> Result<(), String> {
+    desktop::place_hud(&window, 26.0).map_err(|e| e.to_string())
+}
+
+/// The pet reports whether the voice is on, so the menu can show it.
+#[tauri::command]
+fn set_voice_enabled<R: Runtime>(app: AppHandle<R>, voice: tauri::State<voice::Voice>, on: bool) {
+    if voice.enabled.swap(on, Ordering::Relaxed) != on {
+        refresh_tray(&app);
+    }
+}
+
 #[tauri::command]
 fn toggle_panel<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     panel(&app, None).map_err(|e| e.to_string())
@@ -256,6 +270,14 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         app,
         &[
             &MenuItem::with_id(app, "voice:call", talk, voice.state == "running", None::<&str>)?,
+            &CheckMenuItem::with_id(
+                app,
+                "voice:voice",
+                "Voice on",
+                voice.state == "running",
+                app.state::<voice::Voice>().enabled.load(Ordering::Relaxed),
+                None::<&str>,
+            )?,
             &MenuItem::with_id(app, "voice:panel", "Voice panel", voice.state != "unavailable", None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &CheckMenuItem::with_id(app, "hooks", "React to Claude Code", true, hooks::installed(), None::<&str>)?,
@@ -418,7 +440,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_config, fit_window, show_menu, log, world, move_window, cursor, surfaces, set_hit_region, notify, set_status,
-            voice_info, take_voice_commands, toggle_panel
+            voice_info, take_voice_commands, toggle_panel, set_voice_enabled, place_hud
         ])
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
         .setup(|app| {
@@ -464,6 +486,11 @@ fn main() {
             server::spawn(app.handle().clone(), port());
             notifications::spawn(app.handle().clone());
             voice::spawn(app.handle().clone());
+            // The voice HUD sits in the bottom-left corner and shows itself when the voice is busy.
+            if let Some(hud) = app.get_webview_window("hud") {
+                desktop::fit(&hud, 300.0, 26.0)?;
+                desktop::place_hud(&hud, 26.0)?;
+            }
             let handle = app.handle().clone();
             app.listen_any("voice-status", move |_| refresh_tray(&handle));
             Ok(())

@@ -5,6 +5,7 @@
 use serde::Serialize;
 use std::{
     collections::hash_map::RandomState,
+    sync::atomic::AtomicBool,
     hash::BuildHasher,
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -28,6 +29,8 @@ pub struct Voice {
     child: Mutex<Option<Child>>,
     /// Commands from the CLI (`claudebot --call`) waiting for the pet to pass them on.
     pub pending: Mutex<Vec<String>>,
+    /// Whether the voice listens and speaks at all, as the pet last reported it; drives the menu.
+    pub enabled: AtomicBool,
 }
 
 impl Voice {
@@ -38,6 +41,7 @@ impl Voice {
             info: Mutex::new(Info { port, token, state: "starting".into(), error: String::new() }),
             child: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
+            enabled: AtomicBool::new(true),
         }
     }
 
@@ -176,7 +180,8 @@ pub fn commands(args: &[String]) -> Vec<String> {
     let mut it = args.iter().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--call" | "--interrupt" | "--mute" | "--ptt-start" | "--ptt-stop" | "--panel" => {
+            "--call" | "--interrupt" | "--mute" | "--ptt-start" | "--ptt-stop" | "--panel" | "--voice" | "--voice-on"
+            | "--voice-off" => {
                 out.push(arg.trim_start_matches("--").to_string())
             }
             "--say" => {

@@ -28,6 +28,62 @@ pub fn park_bottom_right<R: Runtime>(window: &WebviewWindow<R>, width: f64, heig
     window.set_position(PhysicalPosition::new(x, y))
 }
 
+/// Puts the voice HUD in the bottom-left corner of the rightmost monitor (on a single screen, that
+/// screen). Hyprland moves it through its IPC; elsewhere Tauri does.
+pub fn place_hud<R: Runtime>(window: &WebviewWindow<R>, height: f64) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        hyprland_place_hud(height);
+        return Ok(());
+    }
+    let monitors = window.available_monitors()?;
+    let Some(monitor) = monitors.iter().max_by_key(|m| m.position().x) else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let scale = monitor.scale_factor();
+    let x = area.position.x as f64 + 24.0 * scale;
+    let y = area.position.y as f64 + area.size.height as f64 - (height + 24.0) * scale;
+    window.set_position(PhysicalPosition::new(x, y))
+}
+
+#[cfg(target_os = "linux")]
+fn hyprland_place_hud(height: f64) {
+    use std::process::Command;
+    let json = |what: &str| -> serde_json::Value {
+        Command::new("hyprctl")
+            .args([what, "-j"])
+            .output()
+            .ok()
+            .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+            .unwrap_or_default()
+    };
+    let monitors = json("monitors");
+    let Some(m) = monitors.as_array().and_then(|ms| ms.iter().max_by_key(|m| m["x"].as_i64().unwrap_or(0))) else {
+        return;
+    };
+    let scale = m["scale"].as_f64().unwrap_or(1.0);
+    let reserved = |i: usize| m["reserved"][i].as_f64().unwrap_or(0.0);
+    let x = m["x"].as_f64().unwrap_or(0.0) + reserved(0) + 24.0;
+    let y = m["y"].as_f64().unwrap_or(0.0) + m["height"].as_f64().unwrap_or(1080.0) / scale - reserved(3) - height - 24.0;
+    let pid = std::process::id() as u64;
+    let clients = json("clients");
+    let Some(addr) = clients.as_array().and_then(|cs| {
+        cs.iter()
+            .find(|c| c["pid"].as_u64() == Some(pid) && c["title"].as_str() == Some("Claude Bot HUD"))
+            .and_then(|c| c["address"].as_str().map(String::from))
+    }) else {
+        return;
+    };
+    let (x, y) = (x.round() as i64, y.round() as i64);
+    let lua = format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = \"address:{addr}\" }})");
+    let ok = Command::new("hyprctl").args(["dispatch", &lua]).output().is_ok_and(|o| o.status.success()
+        && String::from_utf8_lossy(&o.stdout).trim() == "ok");
+    if !ok {
+        let _ = Command::new("hyprctl").args(["dispatch", "movewindowpixel", &format!("exact {x} {y},address:{addr}")]).output();
+    }
+}
+
 /// Hyprland ignores "always on top" from clients and blurs behind transparent
 /// windows. Register a rule for this session (nothing is written to the user's
 /// config) before the window first appears. No animation, so walking is smooth,
@@ -55,6 +111,12 @@ pub fn hyprland_rules() {
         move = { "(monitor_w-window_w-24)", "(monitor_h-window_h-24)" },
     })
     hl.window_rule({
+        match = { class = "^claudebot$", title = "^Claude Bot HUD$" },
+        float = true, pin = true, border_size = 0, no_shadow = true, no_blur = true,
+        no_dim = true, no_initial_focus = true, no_follow_mouse = true, no_anim = true,
+        opacity = "1 1", tag = "-default-opacity",
+    })
+    hl.window_rule({
         match = { class = "^claudebot$", title = "^Claude Bot Voice$" },
         float = true, size = { 460, 720 },
         move = { "(monitor_w-window_w-24)", "(monitor_h-window_h-190)" },
@@ -68,6 +130,9 @@ pub fn hyprland_rules() {
         .map(|rule| format!("keyword windowrulev2 {rule}, class:^(claudebot)$, title:^(Claude Bot)$"))
         .join(" ; ")
         + " ; keyword windowrulev2 float, class:^(claudebot)$, title:^(Claude Bot Voice)$"
-        + " ; keyword windowrulev2 size 460 720, class:^(claudebot)$, title:^(Claude Bot Voice)$";
+        + " ; keyword windowrulev2 size 460 720, class:^(claudebot)$, title:^(Claude Bot Voice)$"
+        + &["float", "pin", "noborder", "noshadow", "noblur", "nodim", "noinitialfocus", "noanim"]
+            .map(|rule| format!(" ; keyword windowrulev2 {rule}, class:^(claudebot)$, title:^(Claude Bot HUD)$"))
+            .join("");
     ok(&["--batch", &batch]);
 }
