@@ -6,3 +6,4 @@ voice/.venv/
 voice/models/*.onnx
 voice/models/*.bin
 __pycache__/
+.claude/
