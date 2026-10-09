@@ -23,6 +23,8 @@ from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 from . import audio, policy, stt, tower
 from .brain import Brain
 from .config import MODELS_CHOICES, WEB, Settings
+from .commands import Commands
+from .coordinator import Coordinator
 from .memory import Memory
 from .music import Music
 from .tts import TTS
@@ -41,7 +43,10 @@ DANGLE_S = 1.3  # extra wait when I trail off mid-thought
 PARTIAL_EVERY = 1.5  # seconds between live transcripts while I talk
 # After this much silence the transcriber already runs on what I said. If that reads as a finished
 # sentence, my turn ends right there instead of after the full pause length.
-EARLY_MS = 480
+EARLY_MS = 320
+# After this much silence a complete thought (a few words, not trailing off on "and" or "to") ends my
+# turn even when whisper gave it no full stop; before, those waited out the whole endpoint.
+SETTLED_MS = 750
 FINISHED = re.compile(r"[.?!]['\")\]]*\s*$")
 # A sentence ending on one of these isn't finished ("turn on the lights and", "send it to").
 DANGLING = re.compile(r"(\b(and|or|but|so|because|then|to|the|a|an|of|with|for|from|in|on|at|into|my|your|"
@@ -50,7 +55,18 @@ DANGLING = re.compile(r"(\b(and|or|but|so|because|then|to|the|a|an|of|with|for|f
 YES = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|go|go ahead|do it|allow|approve|approved|confirm|"
                  r"affirmative|please|please do|run it|ship it|correct|right|fine|sounds good)\b")
 NO = re.compile(r"^(no|nope|nah|don't|do not|stop|cancel|deny|denied|negative|wait|hold on|never ?mind)\b")
-HUSH = re.compile(r"^(stop|stop talking|shut up|be quiet|quiet|cancel|never ?mind|hold on|wait|enough)\W*$")
+HUSH = re.compile(r"^(?:(?:ok(?:ay)?|hey|jarvis|please)[, ]+)*(?:stop|stop talking|stop it|shut up|be quiet|quiet|cancel|"
+                  r"cancel that|never ?mind|enough|that'?s enough)(?:[, ]+(?:please|now|jarvis|it))*\W*$")
+# "hold on" pauses the reply where it is, and "go on" picks it up again; neither throws it away.
+HOLD = re.compile(r"^(?:(?:ok(?:ay)?|jarvis)[, ]+)?(?:hold on|wait|one sec(?:ond)?|hang on|just a sec(?:ond)?)\W*$")
+RESUME = re.compile(r"^(?:ok(?:ay)?[, ]+)?(?:go on|carry on|keep going|continue|go ahead)\W*$")
+# Said while it talks or works, these only mean I'm listening: the reply and the task go on.
+BACKCHANNEL = re.compile(r"^(?:ok(?:ay)?|yeah|yes|yep|yup|right|sure|mm+(?:-?hmm+)?|uh-?huh|thanks|thank you|cool|nice|"
+                         r"got it|alright|all right|great|i see|ah|oh|okay okay|ok ok)\W*$")
+# An answer to "Okay to ...?": anything negative wins, and a yes has to be a whole yes ("go back" isn't).
+YES_FULL = re.compile(r"(?:(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|allow it|allow|approve it|approve|approved|"
+                      r"confirm|affirmative|please|please do|run it|ship it|correct|fine|sounds good|go)[, ]*)+")
+NEGATIVE = re.compile(r"\b(no|nope|nah|don'?t|do not|not|never|stop|cancel|deny|denied|wait|hold on|negative)\b")
 
 
 def build_id() -> str:
@@ -97,6 +113,8 @@ class Hub:
         self.music = Music(self._on_music)
         self.device: audio.Device | None = None
         self.brain = Brain(self)
+        self.coordinator = Coordinator(self)
+        self.commands = Commands(self)
         self.pool = ThreadPoolExecutor(1, thread_name_prefix="tts")
         self.tts_q: asyncio.Queue = asyncio.Queue()
         self.fleet: list[dict] = []
@@ -204,6 +222,8 @@ class Hub:
             "muted": self.muted,
             "approval": self._approval_view(),
             "memory": self.memory.items,
+            "coordinator": self.coordinator.view(),
+            "profiles": self.coordinator.profile_list(),
             "music": self.music.state(),
             "audio_error": self.device_error(),
         })
@@ -447,10 +467,12 @@ class Hub:
         early = self.spec and self.spec["task"].done() and not self.spec["task"].exception()
         if early:
             text = self.spec["task"].result()
-            if not (text and FINISHED.search(text) and not DANGLING.search(text)):
+            settled = self.quiet * FRAME_MS >= SETTLED_MS and len(text.split()) >= 3
+            if not (text and (FINISHED.search(text) or settled) and not DANGLING.search(text)):
                 early = False
+        # live transcripts only while I'm talking: in the pause after, they'd hold up the real one
         if (len(self.frames) * FRAME_MS >= 1200 and now - self.partial_at >= PARTIAL_EVERY
-                and self.partial_task is None):
+                and self.partial_task is None and self.quiet * FRAME_MS < 300):
             self.partial_at = now
             self.partial_task = asyncio.create_task(self._partial(np.concatenate(self.frames)))
         if early or self.quiet * FRAME_MS >= self.settings["endpoint_ms"] or len(self.frames) >= MAX_UTTERANCE:
@@ -579,6 +601,26 @@ class Hub:
             self._cut()
             self.draft = None
             await self.brain.interrupt()
+            return
+        if not typed:
+            talking = self.hold or self.playing or self.tts_pending or self.thinking
+            if HOLD.match(low) and talking:
+                self.hold = True  # the reply waits right where it is
+                if self.device:
+                    self.device.pause()
+                self.update()
+                return
+            if RESUME.match(low) and self.hold:
+                self._resume()
+                return
+            # "okay", "yeah", "thanks": I'm listening, carry on. Unless it just asked me something:
+            # then "yes" is my answer.
+            asked = next((e["text"] for e in reversed(self.history) if e["role"] == "assistant"
+                          and e.get("turn") == self.turn), "").rstrip().endswith("?")
+            if BACKCHANNEL.match(low) and talking and not asked:
+                self._resume()
+                return
+        if await self.commands.handle(text):
             return
         now = time.monotonic()
         d = self.draft
@@ -759,12 +801,16 @@ class Hub:
         a["fut"].set_result((decision, note))
 
     def _answer_by_voice(self, text: str, low: str):
-        if re.search(r"\balways\b", low):
+        question = text.strip().endswith("?") or re.match(r"(what|why|how|which|where|who|is it|does it|will it)\b", low)
+        if NEGATIVE.search(low) or NO.match(low):
+            plain = NO.fullmatch(low) or len(low.split()) <= 2
+            self._resolve_approval("deny", "I said no." if plain else f"Not approved. Instead I said: {text}")
+        elif question:
+            self._resolve_approval("deny", f"Not approved yet. I asked: {text}")
+        elif re.search(r"\balways\b", low) and len(low.split()) <= 4:
             self._resolve_approval("always")
-        elif YES.match(low):
+        elif YES_FULL.fullmatch(low):
             self._resolve_approval("allow")
-        elif NO.match(low):
-            self._resolve_approval("deny", "I said no.")
         else:
             self._resolve_approval("deny", f"Not approved. Instead I said: {text}")
 
@@ -772,6 +818,7 @@ class Hub:
 
     async def _on_fleet(self, items, events, fingerprint):
         self.fleet = items
+        stt.hints = "Jarvis, Claude Bot, tower, " + ", ".join(sorted({a["name"] for a in items}))
         if fingerprint != self.fleet_print:
             self.fleet_print = fingerprint
             self.broadcast({"type": "fleet", "agents": tower.view(items)})
@@ -785,6 +832,7 @@ class Hub:
             del self.brain.notes[:-12]
             if kind in ("finished", "waiting") and self.call and self.settings["announce"]:
                 self.announcements.append(text)
+        self.coordinator.observe(items)
         self._flush_announcements()
 
     def _flush_announcements(self):
@@ -860,6 +908,18 @@ class Hub:
             log.warning("window error: %s", str(msg.get("message", ""))[:2000])
         elif kind == "agent" and msg.get("action") == "show":
             await tower.run("jump", str(msg.get("pane", "")))
+        elif kind == "coordinator":
+            action = msg.get("action")
+            if action == "toggle":
+                await self._patch_settings({"coordinator": not self.coordinator.enabled})
+            elif action == "resolve":
+                self.toast(await self.coordinator.resolve(str(msg.get("pane", "")), str(msg.get("decision", "deny")),
+                                                          str(msg.get("note", ""))[:1000]))
+            elif action in ("hands_off", "hands_on"):
+                name = str(msg.get("agent", "")).strip()
+                skip = set(self.settings.get("coordinator_skip", []))
+                skip = skip | {name} if action == "hands_off" else skip - {name}
+                await self._patch_settings({"coordinator_skip": sorted(skip)})
 
     async def set_voice(self, on: bool | None = None):
         """On, off, or (None) the other way round. From the panel, the pet, the menu and the hotkey."""
@@ -889,10 +949,12 @@ class Hub:
         if "model" in applied:
             await self.brain.set_model(applied["model"])
             self.toast(f"Model: {applied['model']}")
-        if "name" in applied or "memory" in applied:
-            await self.brain.restart()  # the system prompt carries both
+        if {"name", "memory", "sentences"} & applied.keys():
+            await self.brain.restart()  # the system prompt carries all three
         if "enabled" in applied:
             await self._voice_switched()
+        if {"coordinator", "coordinator_skip"} & applied.keys():
+            self.broadcast({"type": "coordinator", "coordinator": self.coordinator.view()})
         if {"input_device", "output_device"} & applied.keys() and self.device:
             self.device._close()
             self.device.reconcile()

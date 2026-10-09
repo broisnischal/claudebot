@@ -19,6 +19,20 @@ def speakable(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+SENTENCE_END = re.compile(r"(?<!\.\.)(?<=[.!?])[\"')\]]*(?:\n+|(?=\s|$))|\n+")
+# "Sure." or "Okay," up front would use up a one-sentence answer before it says anything
+OPENER = re.compile(r"^(sure|ok(ay)?|alright|all right|got it|right)[,.!]\s+(?=\S)", re.I)
+
+
+def clip(text: str, sentences: int) -> str:
+    """The first few sentences of a reply: the most the voice says, however much the model wrote."""
+    text = OPENER.sub("", text.strip())
+    for i, m in enumerate(SENTENCE_END.finditer(text), 1):
+        if i == sentences:
+            return text[: m.end()]
+    return text
+
+
 CLAUSE = re.compile(r"(?<=[,;:])\s+")
 # The first piece is what I wait for, and synthesis time grows with its length: it goes out at the
 # first clause break after a few words, or at a word break once it runs long without one.

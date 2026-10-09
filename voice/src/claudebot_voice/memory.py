@@ -1,7 +1,9 @@
-"""Long-term memory: facts, preferences, projects and people I mention, kept across conversations.
+"""Long-term memory: facts, preferences, projects and people I mention, kept across conversations,
+and the tasks the voice did for me, so a new session knows what is already done or under way.
 
 A plain JSON file in ~/.local/share/claudebot. Everything in it goes into the system prompt when a
-Claude session starts, and the model adds to it with the remember tool as we talk.
+Claude session starts. The model adds facts with the remember tool as we talk; the brain logs a
+task after every turn that did something.
 """
 
 import difflib
@@ -12,9 +14,11 @@ import uuid
 
 from .config import DATA_DIR, MEMORY_FILE
 
-KINDS = ("fact", "preference", "project", "person")
+KINDS = ("fact", "preference", "project", "person", "task")
 LIMIT = 200  # oldest go first beyond this
+TASK_LIMIT = 40  # tasks have their own cap, so a busy day never pushes out what it knows about me
 PROMPT_CHARS = 8000
+TASK_PROMPT_CHARS = 3000
 
 
 def _norm(s: str) -> str:
@@ -47,9 +51,18 @@ class Memory:
                 return m, False
         m = {"id": uuid.uuid4().hex[:8], "text": text, "kind": kind, "ts": time.time()}
         self.items.append(m)
-        del self.items[:-LIMIT]
+        self._trim()
         self._save()
         return m, True
+
+    def _trim(self):
+        keep, seen = [], {True: 0, False: 0}
+        for m in reversed(self.items):
+            task = m["kind"] == "task"
+            seen[task] += 1
+            if seen[task] <= (TASK_LIMIT if task else LIMIT):
+                keep.append(m)
+        self.items = keep[::-1]
 
     def find(self, query: str) -> list[dict]:
         q = _norm(query)
@@ -88,15 +101,17 @@ class Memory:
         self.items = []
         self._save()
 
-    def prompt(self) -> str:
-        """The block that goes into the system prompt, newest first when it has to be cut."""
-        if not self.items:
+    def prompt(self, tasks: bool = False) -> str:
+        """The facts (or the tasks) that go into the system prompt, newest first when it has to be cut."""
+        items = [m for m in self.items if (m["kind"] == "task") == tasks]
+        if not items:
             return "Nothing yet."
         lines, size = [], 0
-        for m in reversed(self.items):
-            line = f"- ({m['kind']}, {time.strftime('%-d %b %Y', time.localtime(m['ts']))}) {m['text']}"
+        for m in sorted(items, key=lambda m: -m["ts"]):
+            when = time.strftime("%-d %b %H:%M" if tasks else "%-d %b %Y", time.localtime(m["ts"]))
+            line = f"- ({when}) {m['text']}" if tasks else f"- ({m['kind']}, {when}) {m['text']}"
             size += len(line) + 1
-            if size > PROMPT_CHARS:
+            if size > (TASK_PROMPT_CHARS if tasks else PROMPT_CHARS):
                 break
             lines.append(line)
         return "\n".join(reversed(lines))

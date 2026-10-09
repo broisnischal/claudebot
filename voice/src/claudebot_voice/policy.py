@@ -7,6 +7,7 @@ import shlex
 
 READ_TOOLS = {"Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"}
 FLEET_SAFE = {"fleet_status", "agent_last_reply", "agent_screen", "agent_show", "open_url", "play_youtube",
+              "coordinator_report", "coordinator_answer", "coordinator_set", "agent_context",
               "music_play", "music_control", "remember", "forget", "pet_action"}
 # pc tools with side effects. Everything else in pc only looks (screenshots, windows, logs) or
 # is plainly visible and harmless (open an app, focus a window, switch workspace).

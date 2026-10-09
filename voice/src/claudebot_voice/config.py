@@ -20,6 +20,11 @@ SETTINGS_FILE = CONFIG_DIR / "voice.json"
 LEGACY_SETTINGS = XDG_CONFIG / "voiceagent" / "settings.json"  # Jarvis, before it moved in here
 DATA_DIR = XDG_DATA / "claudebot"
 MEMORY_FILE = DATA_DIR / "memory.json"
+WORKERS_DIR = DATA_DIR / "workers"  # one file per background worker: its task, transcript and result
+WORKTREES_DIR = DATA_DIR / "worktrees"
+SANDBOX_DIR = DATA_DIR / "sandboxes"  # per worker: a scratch folder, and its config for a container
+SCRIPTS_DIR = CONFIG_DIR / "scripts"  # one TOML file per script
+SCRIPTS_STATE = DATA_DIR / "scripts.json"  # when each script last ran, and how it went
 RUNTIME_DIR = Path(os.environ.get("CLAUDEBOT_VOICE_RUNTIME") or Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "claudebot-voice")
 
 MODELS_CHOICES = ["haiku", "sonnet", "opus"]
@@ -42,8 +47,14 @@ DEFAULTS = {
     "output_device": "",
     "music_volume": 0.6,
     "duck": 0.2,  # music level while either of us talks, as a share of music_volume
-    "memory": True,  # remember facts about me across conversations
+    "memory": True,  # remember facts about me, and the tasks it did, across conversations
+    "sentences": 1,  # the most it says per answer; anything longer stays in the transcript
     "cwd": str(Path.home()),
+    "worker_model": "",  # empty: whatever my Claude Code settings pick
+    "workers_max": 4,  # background workers running at once; the rest wait their turn
+    "coordinator": True,  # watch the tmux agents: approve, answer, unstick, and tell me what needs me
+    "coordinator_model": "sonnet",  # judges prompts, questions and stalls; its fleet review runs on Opus
+    "coordinator_skip": [],  # agents it keeps its hands off
 }
 
 # Values the panel may change, with how to coerce them.
@@ -64,8 +75,14 @@ EDITABLE = {
     "music_volume": lambda v: min(1.0, max(0.0, float(v))),
     "duck": lambda v: min(1.0, max(0.0, float(v))),
     "memory": bool,
+    "sentences": lambda v: min(3, max(1, int(v))),
     "enabled": bool,
     "name": lambda v: str(v).strip()[:24] or None,
+    "worker_model": lambda v: v if v in ("", *MODELS_CHOICES) else None,
+    "workers_max": lambda v: min(12, max(1, int(v))),
+    "coordinator": bool,
+    "coordinator_model": lambda v: v if v in MODELS_CHOICES else None,
+    "coordinator_skip": lambda v: sorted({str(x).strip() for x in v if str(x).strip()}) if isinstance(v, list) else None,
 }
 
 

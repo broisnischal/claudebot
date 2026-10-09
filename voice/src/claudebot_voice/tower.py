@@ -31,12 +31,73 @@ async def run(*args: str, timeout: float = 15.0) -> tuple[int, str]:
     return proc.returncode, out.decode(errors="replace").strip()
 
 
+_flags: dict[tuple[str, str], bool] = {}
+
+
+async def supports(command: str, flag: str) -> bool:
+    """Whether this tower's `command` takes `flag` (attachments arrived in a later tower)."""
+    key = (command, flag)
+    if key not in _flags:
+        _, out = await run(command, "--help", timeout=5)
+        _flags[key] = re.search(rf"-{re.escape(flag)}\b", out) is not None
+    return _flags[key]
+
+
 async def tmux(*args: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "tmux", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
     )
     out, _ = await proc.communicate()
     return proc.returncode, out.decode(errors="replace").strip()
+
+
+# Claude Code's folder-trust dialog, all of it: a shell that merely shows the words must never get keys.
+TRUST_LINES = ("Yes, I trust this folder", "No, exit", "Enter to confirm")
+TRUST_YES = re.compile(r"❯\s*(\d\.\s*)?Yes, I trust this folder")
+
+
+# Any of Claude Code's dialogs (a permission prompt, a question, the trust question) at the bottom of a pane.
+DIALOG = re.compile(r"Esc to cancel|\(esc\)|Do you want to proceed|Would you like to proceed|Enter to (select|confirm)|"
+                    r"Tab/Arrow keys|❯ \d+\. (Yes|No)\b")
+
+
+def bottom(screen: str, n: int = 12) -> str:
+    """The last n non-blank lines: what is live on the screen, not what scrolled up above a prompt."""
+    return "\n".join([line for line in screen.splitlines() if line.strip()][-n:])
+
+
+async def screen(pane: str) -> str:
+    rc, out = await tmux("capture-pane", "-p", "-t", pane)
+    return "" if rc else out
+
+
+async def dialog_open(pane: str) -> bool:
+    return bool(DIALOG.search(bottom(await screen(pane))))
+
+
+def _trust_live(screen: str) -> bool:
+    # the dialog must be what the pane shows now: Claude may have exited and left it above a shell prompt
+    return all(line in screen for line in TRUST_LINES) and "Enter to confirm" in bottom(screen, 3)
+
+
+async def trust_dialog(pane: str) -> bool:
+    return _trust_live(await screen(pane))
+
+
+async def accept_trust(pane: str) -> bool:
+    """Pick "Yes, I trust this folder" on Claude Code's trust dialog. The highlighted first option is
+    "No, exit", and Down and Enter sent together arrive as one chunk that confirms "No, exit". So: one
+    key at a time, and Enter only once the pointer is seen on Yes."""
+    for _ in range(3):
+        rc, shown = await tmux("capture-pane", "-p", "-t", pane)
+        if rc or not _trust_live(shown):
+            return False
+        if TRUST_YES.search(shown):
+            rc, _ = await tmux("send-keys", "-t", pane, "Enter")
+            return rc == 0
+        await tmux("send-keys", "-t", pane, "Down")
+        await asyncio.sleep(0.5)
+    return False
 
 
 def _state_file(session_id: str) -> dict:

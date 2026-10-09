@@ -34,6 +34,9 @@ LOGLINE = re.compile(r"^\d{4}-\d\d-\d\dT\S+\s+(TRIGGER|TRACE|DEBUG|INFO|WARN|ERR
 # What whisper says when it heard nothing worth answering.
 NOISE = re.compile(r"^\W*(\[[^\]]*\]|\([^)]*\)|you|\.+|uh+|um+|hmm+)?\W*$", re.I)
 
+# Words whisper should expect: the assistant's name and my agents' names, which it mishears most.
+hints = "Jarvis, Claude Bot, tower"
+
 _pool = ThreadPoolExecutor(1, thread_name_prefix="stt")
 _lock = threading.Lock()
 _models: dict[str, object] = {}
@@ -77,7 +80,7 @@ def _whisper(model, pcm: np.ndarray) -> str:
     x = pcm.astype(np.float32) / 32768
     ctx = min(1500, max(CTX_FLOOR, int(len(x) / 16000 * 50) + 64))  # 50 encoder frames a second
     segments = model.transcribe(x, language="en", single_segment=len(x) < 16000 * 20, no_context=True,
-                                audio_ctx=ctx)
+                                audio_ctx=ctx, initial_prompt=hints)
     return " ".join(s.text for s in segments).strip()
 
 
