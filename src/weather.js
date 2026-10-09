@@ -157,7 +157,10 @@ function cloud(p, x, y, color, alpha = 0.9) {
   p.rect(x + 5, y - 1, 2, 1, color, alpha);
 }
 
-export function drawSkyBack(p, s, t, petX) {
+// One cloud at a time: two drifting at different speeds kept passing over each other and read
+// as a doubled cloud. `clouds` is false while the pet holds its own cloud over its head, and
+// `puddle` false while it is off the ground.
+export function drawSkyBack(p, s, t, petX, { clouds = true, puddle = true } = {}) {
   if (!s) return;
   const drift = (speed, offset) => ((t / 1000) * speed + offset) % (W + 12) - 10;
   if (!s.day && (s.kind === 'clear' || s.kind === 'clouds')) {
@@ -171,15 +174,10 @@ export function drawSkyBack(p, s, t, petX) {
     p.rect(4, 3, 3, 3, '#FFD54A');
     p.bitmap(ray ? ['#...#', '.....', '.....', '.....', '#...#'] : ['..#..', '.....', '#...#', '.....', '..#..'], 3, 2, '#FFE58A');
   }
-  if (s.kind === 'clouds' || s.kind === 'rain' || s.kind === 'snow') {
-    cloud(p, drift(1.2, 0), 3, s.day ? '#E3E7EC' : '#8E95A1');
-    cloud(p, drift(0.8, 30), 6, s.day ? '#D3D8DF' : '#7C838F', 0.8);
-  }
-  if (s.kind === 'thunder') {
-    cloud(p, drift(1.5, 10), 3, '#5E6470');
-    cloud(p, drift(1.1, 34), 5, '#6B717C');
-  }
-  if (s.kind === 'rain' || s.kind === 'thunder') {
+  // Row 6 keeps the cloud clear of the status pill along the top.
+  if (clouds && (s.kind === 'clouds' || s.kind === 'rain' || s.kind === 'snow')) cloud(p, drift(1.2, 0), 6, s.day ? '#E3E7EC' : '#8E95A1');
+  if (clouds && s.kind === 'thunder') cloud(p, drift(1.5, 10), 6, '#5E6470');
+  if (puddle && (s.kind === 'rain' || s.kind === 'thunder')) {
     p.rect(petX + 1, GROUND, 16, 1, '#5B8FCF', 0.55);
     p.rect(petX + 3 + (Math.floor(t / 400) % 10), GROUND, 2, 1, '#BFE0FF', 0.7);
   }

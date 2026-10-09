@@ -75,10 +75,74 @@ fn hyprland_place_hud(height: f64) {
     }) else {
         return;
     };
+    hyprland_move(&addr, x, y);
+}
+
+/// Puts one of my windows at a desktop position (layout pixels). On Hyprland the window is also
+/// handed to the monitor there: Hyprland draws a window only on its own monitor, however far it's
+/// moved.
+pub fn place<R: Runtime>(window: &WebviewWindow<R>, title: &str, x: f64, y: f64) -> tauri::Result<()> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        hyprland_place(title, x, y);
+        return Ok(());
+    }
+    window.set_position(tauri::LogicalPosition::new(x, y))
+}
+
+#[cfg(target_os = "linux")]
+fn hyprland_place(title: &str, x: f64, y: f64) {
+    use std::process::Command;
+    let pid = std::process::id() as u64;
+    // a window built a moment ago is mapped a moment later
+    for _ in 0..40 {
+        let clients: serde_json::Value = Command::new("hyprctl")
+            .args(["clients", "-j"])
+            .output()
+            .ok()
+            .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+            .unwrap_or_default();
+        let addr = clients.as_array().and_then(|cs| {
+            cs.iter()
+                .find(|c| c["pid"].as_u64() == Some(pid) && c["title"].as_str() == Some(title))
+                .and_then(|c| c["address"].as_str().map(String::from))
+        });
+        if let Some(addr) = addr {
+            hyprland_move(&addr, x, y);
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Hand the window to the monitor under (x, y), then move it there, in one batch so it never shows
+/// in between.
+#[cfg(target_os = "linux")]
+fn hyprland_move(addr: &str, x: f64, y: f64) {
+    use std::process::Command;
+    let monitors: serde_json::Value = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or_default();
+    let name = monitors.as_array().and_then(|ms| {
+        ms.iter().find(|m| {
+            let scale = m["scale"].as_f64().unwrap_or(1.0);
+            let (mx, my) = (m["x"].as_f64().unwrap_or(0.0), m["y"].as_f64().unwrap_or(0.0));
+            let (mw, mh) = (m["width"].as_f64().unwrap_or(0.0) / scale, m["height"].as_f64().unwrap_or(0.0) / scale);
+            x + 1.0 >= mx && x + 1.0 < mx + mw && y + 1.0 >= my && y + 1.0 < my + mh
+        })
+        .and_then(|m| m["name"].as_str().map(String::from))
+    });
     let (x, y) = (x.round() as i64, y.round() as i64);
-    let lua = format!("hl.dsp.window.move({{ x = {x}, y = {y}, window = \"address:{addr}\" }})");
-    let ok = Command::new("hyprctl").args(["dispatch", &lua]).output().is_ok_and(|o| o.status.success()
-        && String::from_utf8_lossy(&o.stdout).trim() == "ok");
+    let mut batch = Vec::new();
+    if let Some(name) = name {
+        batch.push(format!("dispatch hl.dsp.window.move({{ monitor = \"{name}\", follow = false, window = \"address:{addr}\" }})"));
+    }
+    batch.push(format!("dispatch hl.dsp.window.move({{ x = {x}, y = {y}, window = \"address:{addr}\" }})"));
+    let ok = Command::new("hyprctl").args(["--batch", &batch.join(" ; ")]).output()
+        .is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).contains("rror"));
     if !ok {
         let _ = Command::new("hyprctl").args(["dispatch", "movewindowpixel", &format!("exact {x} {y},address:{addr}")]).output();
     }
@@ -117,6 +181,12 @@ pub fn hyprland_rules() {
         opacity = "1 1", tag = "-default-opacity",
     })
     hl.window_rule({
+        match = { class = "^claudebot$", title = "^Claude Bot Play$" },
+        float = true, pin = true, border_size = 0, no_shadow = true, no_blur = true,
+        no_dim = true, no_initial_focus = true, no_follow_mouse = true, no_anim = true,
+        opacity = "1 1", tag = "-default-opacity",
+    })
+    hl.window_rule({
         match = { class = "^claudebot$", title = "^Claude Bot Voice$" },
         float = true, size = { 460, 720 },
         move = { "(monitor_w-window_w-24)", "(monitor_h-window_h-190)" },
@@ -133,6 +203,9 @@ pub fn hyprland_rules() {
         + " ; keyword windowrulev2 size 460 720, class:^(claudebot)$, title:^(Claude Bot Voice)$"
         + &["float", "pin", "noborder", "noshadow", "noblur", "nodim", "noinitialfocus", "noanim"]
             .map(|rule| format!(" ; keyword windowrulev2 {rule}, class:^(claudebot)$, title:^(Claude Bot HUD)$"))
+            .join("")
+        + &["float", "pin", "noborder", "noshadow", "noblur", "nodim", "noinitialfocus", "noanim"]
+            .map(|rule| format!(" ; keyword windowrulev2 {rule}, class:^(claudebot)$, title:^(Claude Bot Play)$"))
             .join("");
     ok(&["--batch", &batch]);
 }

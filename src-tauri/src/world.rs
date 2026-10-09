@@ -85,13 +85,15 @@ pub fn world<R: Runtime>(backend: Backend, window: &WebviewWindow<R>) -> World {
     }
 }
 
-pub fn move_to<R: Runtime>(backend: Backend, window: &WebviewWindow<R>, x: i32, y: i32) {
+/// `w` and `h` are the window's size: Hyprland needs it to tell which monitor the pet is on.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+pub fn move_to<R: Runtime>(backend: Backend, window: &WebviewWindow<R>, x: i32, y: i32, w: i32, h: i32) {
     match backend {
         Backend::Native => {
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
         #[cfg(target_os = "linux")]
-        Backend::Hyprland => hypr::move_to(x, y),
+        Backend::Hyprland => hypr::move_to(x, y, w, h),
         _ => {}
     }
 }
@@ -160,7 +162,7 @@ mod hypr {
         os::unix::net::UnixStream,
         path::PathBuf,
         sync::{Mutex, OnceLock},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     fn socket() -> Option<PathBuf> {
@@ -196,6 +198,9 @@ mod hypr {
     }
 
     static ADDRESS: Mutex<Option<String>> = Mutex::new(None);
+    // The monitor Hyprland has the pet's window on. It draws a window only there, and moving
+    // the window doesn't change it, so the pet would vanish walking onto the next screen.
+    static MONITOR: Mutex<Option<i64>> = Mutex::new(None);
 
     // The pet's window: the voice panel shares our pid, so match the title too.
     fn ours() -> Option<Value> {
@@ -206,6 +211,7 @@ mod hypr {
             .find(|c| c["pid"].as_u64() == Some(pid) && c["title"].as_str() == Some("Claude Bot"))?
             .clone();
         *ADDRESS.lock().unwrap() = client["address"].as_str().map(String::from);
+        *MONITOR.lock().unwrap() = client["monitor"].as_i64();
         Some(client)
     }
 
@@ -225,11 +231,7 @@ mod hypr {
             .into_iter()
             .flatten()
             .filter_map(|m| {
-                let scale = m["scale"].as_f64().unwrap_or(1.0);
-                let (mut w, mut h) = (m["width"].as_f64()? / scale, m["height"].as_f64()? / scale);
-                if m["transform"].as_u64().unwrap_or(0) % 2 == 1 {
-                    std::mem::swap(&mut w, &mut h);
-                }
+                let (w, h) = size(m)?;
                 let r = |i: usize| m["reserved"][i].as_f64().unwrap_or(0.0);
                 Some(Rect {
                     x: m["x"].as_f64()? + r(0),
@@ -241,16 +243,78 @@ mod hypr {
             .collect()
     }
 
-    pub fn move_to(x: i32, y: i32) {
+    // A monitor's size in layout pixels: scaled, and swapped when it's turned sideways.
+    fn size(m: &Value) -> Option<(f64, f64)> {
+        let scale = m["scale"].as_f64().unwrap_or(1.0);
+        let (w, h) = (m["width"].as_f64()? / scale, m["height"].as_f64()? / scale);
+        Some(if m["transform"].as_u64().unwrap_or(0) % 2 == 1 { (h, w) } else { (w, h) })
+    }
+
+    #[derive(Clone)]
+    struct Screen {
+        id: i64,
+        name: String,
+        workspace: i64,
+        area: Rect,
+    }
+
+    static SCREENS: Mutex<Option<(Instant, Vec<Screen>)>> = Mutex::new(None);
+
+    // The monitor under a point. The pet asks on every frame it moves, so the list is
+    // read again only every couple of seconds.
+    fn screen_at(x: f64, y: f64) -> Option<Screen> {
+        let mut cache = SCREENS.lock().unwrap();
+        if cache.as_ref().is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(2)) {
+            let list = json("monitors")?
+                .as_array()?
+                .iter()
+                .filter_map(|m| {
+                    let (w, h) = size(m)?;
+                    Some(Screen {
+                        id: m["id"].as_i64()?,
+                        name: m["name"].as_str()?.to_string(),
+                        workspace: m["activeWorkspace"]["id"].as_i64()?,
+                        area: Rect { x: m["x"].as_f64()?, y: m["y"].as_f64()?, w, h },
+                    })
+                })
+                .collect();
+            *cache = Some((Instant::now(), list));
+        }
+        let (_, list) = cache.as_ref()?;
+        list.iter()
+            .find(|s| x >= s.area.x && x < s.area.x + s.area.w && y >= s.area.y && y < s.area.y + s.area.h)
+            .cloned()
+    }
+
+    pub fn move_to(x: i32, y: i32, w: i32, h: i32) {
         let address = ADDRESS.lock().unwrap().clone();
         let Some(addr) = address.or_else(|| ours().and_then(|c| c["address"].as_str().map(String::from))) else {
             return;
         };
-        let cmd = if lua() {
+        let mut cmd = if lua() {
             format!("dispatch hl.dsp.window.move({{ x = {x}, y = {y}, window = \"address:{addr}\" }})")
         } else {
             format!("dispatch movewindowpixel exact {x} {y},address:{addr}")
         };
+        // Once the middle of the window is over another monitor, hand the window to it. Handing
+        // over pulls the window fully inside that monitor, so the move goes in the same batch
+        // right after it, and the window never shows anywhere in between.
+        let (cx, cy) = (x as f64 + w as f64 / 2.0, y as f64 + h as f64 / 2.0);
+        if let Some(screen) = screen_at(cx, cy) {
+            let mut on = MONITOR.lock().unwrap();
+            if *on != Some(screen.id) {
+                *on = Some(screen.id);
+                let hand = if lua() {
+                    format!(
+                        "dispatch hl.dsp.window.move({{ monitor = \"{}\", follow = false, window = \"address:{addr}\" }})",
+                        screen.name
+                    )
+                } else {
+                    format!("dispatch movetoworkspacesilent {},address:{addr}", screen.workspace)
+                };
+                cmd = format!("[[BATCH]]{hand};{cmd}");
+            }
+        }
         request(&cmd);
     }
 

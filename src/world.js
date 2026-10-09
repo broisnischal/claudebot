@@ -57,6 +57,13 @@ export class World {
     this.sliding = false;
     this.gentle = false;
     this.held = false;
+    // Where the cursor holds the pet while I carry it, in window px; null when the
+    // compositor moves the window itself (every backend but Hyprland).
+    this.grip = null;
+    this.holdGround = false; // carried along the floor: it crawls
+    this.cursorBusy = false;
+    this.crossing = false; // on a jump to another monitor I asked for
+    this.onCross = null; // carried to another monitor's edge: the compositor takes over the drag
     this.trail = new Trail();
     this.dangle = new Dangle();
     this.onBump = null;
@@ -101,7 +108,7 @@ export class World {
   }
 
   async refresh() {
-    if (!this.invoke || this.moving || this.falling || this.sliding || this.flying) return;
+    if (!this.invoke || this.grip || this.moving || this.falling || this.sliding || this.flying) return;
     try {
       const w = await this.invoke('world');
       this.backend = w.backend;
@@ -111,6 +118,13 @@ export class World {
         const fresh = w.window;
         const portrait = this.edge === 'left' || this.edge === 'right';
         this.win = !this.win || fresh.h > fresh.w === portrait ? fresh : { ...fresh, w: this.win.w, h: this.win.h };
+      } else if (w.window && this.rim && !this.held) {
+        // Hyprland keeps a floating window's centre when its size changes, and the resize from a
+        // turn can land after the move that went with it, leaving the pet half its length off the
+        // edge. Once the new size is in, put the window back where the pet is.
+        const f = w.window;
+        const sized = Math.abs(f.w - this.win.w) <= 1 && Math.abs(f.h - this.win.h) <= 1;
+        if (sized && (Math.abs(f.x - this.win.x) > 2 || Math.abs(f.y - this.win.y) > 2)) this.send();
       }
     } catch {
       // A missed reply keeps the last known state rather than switching roaming off.
@@ -190,20 +204,9 @@ export class World {
     return [lo - HOME_X * k, hi - (HOME_X + SPRITE.w) * k];
   }
 
-  // Floor it can walk without jumping: this monitor plus neighbours whose bottom edges line
-  // up, so it strolls straight across the boundary between them.
+  // Floor it can walk: this monitor's. It never strolls onto another monitor by itself.
   floorSpan(m = this.monitor()) {
-    const floor = m.y + m.h;
-    let [lo, hi] = [m.x, m.x + m.w];
-    for (let grew = true; grew; ) {
-      grew = false;
-      for (const o of this.monitors) {
-        if (Math.abs(o.y + o.h - floor) > 2) continue;
-        if (Math.abs(o.x + o.w - lo) < 2) [lo, grew] = [o.x, true];
-        if (Math.abs(o.x - hi) < 2) [hi, grew] = [o.x + o.w, true];
-      }
-    }
-    return [lo, hi];
+    return [m.x, m.x + m.w];
   }
 
   // Window x that hangs the pet on a vertical edge. facing 1: the wall is on its right.
@@ -301,8 +304,9 @@ export class World {
   }
 
   // Drop everything in progress, including a move already queued for the compositor,
-  // so nothing yanks the window while someone drags it.
-  grab() {
+  // so nothing yanks the window while someone drags it. With a grip, the pet carries
+  // its own window (see holdTick); it turns upright first, held by the middle.
+  grab(grip = null) {
     this.target = null;
     this.flight = null;
     this.falling = false;
@@ -314,23 +318,60 @@ export class World {
     this.afterWalk = null;
     this.queued = false;
     this.held = true;
+    this.crossing = false;
+    this.holdGround = false;
     this.trail.clear();
     this.dangle.reset();
+    this.grip = grip;
+    if (grip && this.win && this.edge !== 'bottom') {
+      this.reorient('bottom');
+      const [gx, gy] = this.mapPoint('bottom', ...CENTER);
+      this.grip = { x: gx, y: gy };
+    }
   }
 
-  // Every frame while it's held: sample the cursor for the throw and swing the body.
+  // Every frame while it's held: the window follows the cursor, keeping the spot I picked the
+  // pet up by under it, and never sinks through the floor (dragged along it, the pet crawls).
+  // The cursor samples also give the throw its speed and the body its swing.
   holdTick(dt) {
     this.clock += dt;
     const now = this.clock;
-    if (this.invoke && this.backend !== 'fixed') {
+    if (this.invoke && this.backend !== 'fixed' && !this.cursorBusy) {
+      this.cursorBusy = true;
       this.invoke('cursor').then((c) => {
-        if (c && this.held) {
-          this.cursor = c;
-          this.trail.add(now, c.x, c.y);
+        if (!c || !this.held) return;
+        this.cursor = c;
+        this.trail.add(now, c.x, c.y);
+        if (!this.grip || !this.win) return;
+        const m = this.monitor();
+        const floor = this.restY(m);
+        const x = c.x - this.grip.x;
+        const y = Math.min(c.y - this.grip.y, floor);
+        // Handing the window to another monitor breaks the pointer's hold: GTK reports the button
+        // up and the real release never comes. So the compositor carries it over from here.
+        const [cx, cy] = [x + this.win.w / 2, y + this.win.h / 2];
+        const over = this.monitors.find((o) => cx >= o.x && cx < o.x + o.w && cy >= o.y && cy < o.y + o.h);
+        if (over && over !== m && this.onCross) {
+          this.grip = null;
+          this.holdGround = false;
+          this.onCross();
+          return;
         }
-      }).catch(() => {});
+        this.win.x = x;
+        this.win.y = y;
+        this.holdGround = floor - y < 3 * this.k;
+        this.send();
+      }).catch(() => {}).finally(() => {
+        this.cursorBusy = false;
+      });
     }
-    this.dangle.step(dt / 1000, this.trail.velocity(now).vx / this.k);
+    this.dangle.step(dt / 1000, this.holdGround ? 0 : this.trail.velocity(now).vx / this.k);
+  }
+
+  // How fast I'm carrying it, in stage units per second: { vx, vy, speed }.
+  holdSpeed() {
+    const { vx, vy } = this.trail.velocity(this.clock);
+    return { vx: vx / this.k, vy: vy / this.k, speed: Math.hypot(vx, vy) / this.k };
   }
 
   // ---- physics ----
@@ -391,6 +432,12 @@ export class World {
   // Lift off, cross the screen with a little bob, then let gravity bring it down.
   fly(unitsPerSec = 34) {
     if (!this.canRoam) return false;
+    // Off a side or the top edge it turns the right way up first. Left on the edge, it stayed
+    // there upside down or sideways: rimTick runs instead of the flight, which never ended.
+    if (this.rim) {
+      this.rim = null;
+      this.reorient('bottom');
+    }
     const m = this.monitor();
     const k = this.k;
     const [lo, hi] = [m.x - HOME_X * k, m.x + m.w - (HOME_X + SPRITE.w) * k];
@@ -407,6 +454,7 @@ export class World {
   // ---- landing and gravity ----
 
   startFall(through = false) {
+    this.motionMonitor = this.monitor();
     this.falling = true;
     this.sliding = false;
     this.gentle = false;
@@ -420,6 +468,8 @@ export class World {
   // edge (the pet turns to sit on it), or a window's side to cling to. Else it falls.
   drop() {
     this.held = false;
+    this.grip = null;
+    this.holdGround = false;
     if (!this.canRoam) return false;
     const k = this.k;
     // Let go while moving fast and it keeps that speed: bounces, slides, then settles.
@@ -548,7 +598,9 @@ export class World {
     const vx = (tx - c.x) / T;
     this.rim = null;
     this.reorient('bottom');
-    return this.launch(vx / k, vy / k, { through: true });
+    if (!this.launch(vx / k, vy / k, { through: true })) return false;
+    this.crossing = true;
+    return true;
   }
 
   // Borders between tiled windows on this monitor: 'v' where two sit side by side,
@@ -849,6 +901,10 @@ export class World {
     const k = this.k;
     this.falling = false;
     this.through = false;
+    this.crossing = false;
+    // a jump to the other monitor ends on that monitor: its walls hold the slide that follows, not
+    // the old monitor's, which would shove the pet straight back across the edge
+    this.motionMonitor = this.monitor();
     this.vy = 0;
     this.settle(under.y, under.id);
     this.sliding = Math.abs(this.vx) > PHYS.slideMin * k;
@@ -962,7 +1018,8 @@ export class World {
       return;
     }
     this.inflight = true;
-    this.invoke('move_window', { x: Math.round(this.win.x), y: Math.round(this.win.y) })
+    const [x, y, w, h] = [this.win.x, this.win.y, this.win.w, this.win.h].map(Math.round);
+    this.invoke('move_window', { x, y, w, h })
       .catch(() => {})
       .finally(() => {
         this.inflight = false;

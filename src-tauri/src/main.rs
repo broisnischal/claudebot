@@ -122,8 +122,8 @@ fn world<R: Runtime>(window: WebviewWindow<R>, state: tauri::State<AppState>) ->
 }
 
 #[tauri::command]
-fn move_window<R: Runtime>(window: WebviewWindow<R>, state: tauri::State<AppState>, x: i32, y: i32) {
-    world::move_to(state.backend, &window, x, y);
+fn move_window<R: Runtime>(window: WebviewWindow<R>, state: tauri::State<AppState>, x: i32, y: i32, w: i32, h: i32) {
+    world::move_to(state.backend, &window, x, y, w, h);
 }
 
 #[tauri::command]
@@ -199,6 +199,42 @@ fn toggle_panel<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     panel(&app, None).map_err(|e| e.to_string())
 }
 
+/// The game layer: a see-through window over one monitor, where the ball and the pet's stones fly
+/// across the whole screen instead of inside the pet's small window. Only what it draws takes clicks.
+#[tauri::command]
+fn play_layer<R: Runtime>(app: AppHandle<R>, open: bool, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    let existing = app.get_webview_window("play");
+    if !open {
+        if let Some(w) = existing {
+            w.close().map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+    let window = match existing {
+        Some(w) => w,
+        None => {
+            let w = WebviewWindowBuilder::new(&app, "play", WebviewUrl::App("play.html".into()))
+                .title("Claude Bot Play")
+                .inner_size(width, height)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .focused(false)
+                .visible_on_all_workspaces(true)
+                .build()
+                .map_err(|e| e.to_string())?;
+            // A new window takes every click until its shape is set: start with none, outside it.
+            #[cfg(target_os = "linux")]
+            world::set_hit_region(&w, world::Rect { x: -10.0, y: -10.0, w: 1.0, h: 1.0 });
+            w
+        }
+    };
+    desktop::fit(&window, width, height).map_err(|e| e.to_string())?;
+    desktop::place(&window, "Claude Bot Play", x, y).map_err(|e| e.to_string())
+}
+
 /// The voice panel: fleet, conversation, approvals, memory and settings. `open` None toggles it.
 fn panel<R: Runtime>(app: &AppHandle<R>, open: Option<bool>) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("panel") {
@@ -270,6 +306,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         app,
         &[
             &MenuItem::with_id(app, "voice:call", talk, voice.state == "running", None::<&str>)?,
+            &MenuItem::with_id(app, "play:fetch", "Play fetch", true, None::<&str>)?,
             &CheckMenuItem::with_id(
                 app,
                 "voice:voice",
@@ -440,7 +477,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_config, fit_window, show_menu, log, world, move_window, cursor, surfaces, set_hit_region, notify, set_status,
-            voice_info, take_voice_commands, toggle_panel, set_voice_enabled, place_hud
+            voice_info, take_voice_commands, toggle_panel, set_voice_enabled, place_hud, play_layer
         ])
         .on_menu_event(|app, event| on_menu(app, event.id().as_ref()))
         .setup(|app| {
@@ -486,7 +523,8 @@ fn main() {
             server::spawn(app.handle().clone(), port());
             notifications::spawn(app.handle().clone());
             voice::spawn(app.handle().clone());
-            // The voice HUD sits in the bottom-left corner and shows itself when the voice is busy.
+            // The voice HUD holds the mic and the voice's status in the bottom-left corner, and shows
+            // itself whenever the voice can run.
             if let Some(hud) = app.get_webview_window("hud") {
                 desktop::fit(&hud, 300.0, 26.0)?;
                 desktop::place_hud(&hud, 26.0)?;

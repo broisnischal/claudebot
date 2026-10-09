@@ -68,6 +68,8 @@ voice.on('log', (m) => {
 });
 voice.on('history', () => ui.log.replaceChildren());
 voice.on('fleet', () => renderFleet());
+voice.on('coordinator', () => renderFleet());
+voice.on('profiles', () => renderFleet());
 voice.on('toast', (m) => toast(m.text, m.kind));
 voice.on('approval', () => renderApproval());
 voice.on('settings', () => {
@@ -148,6 +150,30 @@ function ago(ts) {
 const RANK = { waiting: 0, working: 1, done: 2, idle: 3 };
 const STATE_TEXT = { working: 'working', waiting: 'waiting on you', done: 'done', idle: 'idle' };
 
+// The coordinator: on or off, what it's waiting on me for (with my answer one click away), and
+// what it did lately. It sits above the agents it looks after.
+function coordinatorView() {
+  const C = S.coordinator;
+  const resolve = (pane, decision) => (e) => { e.stopPropagation(); send({ type: 'coordinator', action: 'resolve', pane, decision }); };
+  const prompt = (kind) => kind === 'permission' || kind === 'question' || kind === 'waiting';
+  return h('section', { class: 'coord' },
+    h('div', { class: 'coord-head' },
+      h('span', { class: 'coord-title' }, 'Coordinator'),
+      h('span', { class: 'coord-sub' }, C.enabled ? 'approves, answers and unsticks your agents' : 'off'),
+      h('button', { class: 'coord-toggle', 'aria-pressed': String(!!C.enabled),
+        onclick: () => send({ type: 'coordinator', action: 'toggle' }) }, C.enabled ? 'On' : 'Off')),
+    ...C.pending.map((p) => h('div', { class: 'coord-card' },
+      h('p', { class: 'coord-text' }, p.text),
+      p.detail ? h('pre', { class: 'coord-detail' }, p.detail) : null,
+      h('div', { class: 'coord-actions' },
+        h('button', { class: 'primary', onclick: resolve(p.pane, 'approve') }, prompt(p.kind) ? 'Approve' : 'Go ahead'),
+        h('button', { onclick: resolve(p.pane, 'deny') }, prompt(p.kind) ? 'Deny' : 'Dismiss')))),
+    C.log.length ? h('details', { class: 'coord-log', open: !!view.logOpen, ontoggle: (e) => { view.logOpen = e.target.open; } },
+      h('summary', {}, `Recent actions (${C.log.length})`),
+      ...C.log.slice(-12).reverse().map((e) => h('p', {},
+        h('span', { class: 'coord-when' }, ago(e.ts)), ' ', h('b', {}, e.agent), ` ${e.action}: ${e.reason}`))) : null);
+}
+
 function renderFleet() {
   const agents = [...S.fleet].sort((a, b) => (RANK[a.state] ?? 9) - (RANK[b.state] ?? 9));
   ui.fleetCount.textContent = agents.length || '';
@@ -155,10 +181,15 @@ function renderFleet() {
   if (waiting || done) ui.drawerBtn.dataset.alert = waiting ? 'waiting' : 'done';
   else delete ui.drawerBtn.dataset.alert;
   if (!agents.length) {
-    ui.fleet.replaceChildren(h('p', { class: 'empty' }, 'No agents in tmux right now.'));
+    ui.fleet.replaceChildren(coordinatorView(), h('p', { class: 'empty' }, 'No agents in tmux right now.'));
     return;
   }
-  ui.fleet.replaceChildren(...agents.map((a) => {
+  const profiles = new Map(S.profiles.map((p) => [p.pane, p]));
+  const skip = new Set((S.coordinator.skip || []).map((x) => x.toLowerCase()));
+  ui.fleet.replaceChildren(coordinatorView(), ...agents.map((a) => {
+    const p = profiles.get(a.pane);
+    const off = skip.has(a.name.toLowerCase());
+    const hands = (e) => { e.stopPropagation(); send({ type: 'coordinator', action: off ? 'hands_on' : 'hands_off', agent: a.name }); };
     const busy = a.state === 'working' || a.state === 'waiting';
     const since = ago(a.since);
     const ask = (text) => (e) => { e.stopPropagation(); send({ type: 'text', text }); };
@@ -174,11 +205,17 @@ function renderFleet() {
       (busy && a.activity) || a.prompt
         ? h('p', { class: `agent-doing${busy && a.activity ? ' mono' : ''}` }, busy && a.activity ? a.activity : a.prompt)
         : null,
+      p?.summary ? h('p', { class: 'agent-note' }, p.model ? `${p.model} · ${p.summary}` : p.summary) : null,
+      p?.blocked_on ? h('p', { class: 'agent-note blocked' }, `Blocked on: ${p.blocked_on}`) : null,
+      p?.needs ? h('p', { class: 'agent-note needs' }, `Needs: ${p.needs}`) : null,
+      p?.next && view.openAgent === a.pane ? h('p', { class: 'agent-note' }, `Next: ${p.next}`) : null,
       h('div', { class: 'agent-actions' },
         h('button', { onclick: ask(`What is ${a.name} doing right now?`) }, 'What’s it doing?'),
         h('button', { onclick: ask(`What did ${a.name} say in its last reply?`) }, 'Last reply'),
         a.state === 'waiting' ? h('button', { onclick: ask(`What is ${a.name} waiting on me for?`) }, 'What does it need?') : null,
-        h('button', { onclick: (e) => { e.stopPropagation(); send({ type: 'agent', action: 'show', pane: a.pane }); } }, 'Show pane')));
+        h('button', { onclick: (e) => { e.stopPropagation(); send({ type: 'agent', action: 'show', pane: a.pane }); } }, 'Show pane'),
+        h('button', { onclick: hands, title: 'Whether the coordinator may act on this agent' },
+          off ? 'Coordinator: hands off' : 'Coordinator: on')));
   }));
 }
 
@@ -310,12 +347,14 @@ function renderSettings() {
     row('Listening', segmented('input', [['handsfree', 'Hands-free'], ['ptt', 'Push to talk']]),
       h('small', {}, s.input === 'ptt' ? 'Only while Space is held.' : 'Voice detection ends my turn after a pause. Space still works.')),
     row('Interrupt', toggle('barge_in'), h('span', { class: 'label' }, 'Talking over the voice cuts it off')),
+    row('Answers', segmented('sentences', [[1, 'One sentence'], [2, 'Two'], [3, 'Three']]),
+      h('small', {}, 'The most it says out loud. The full reply stays in the conversation.')),
     row('Announce', toggle('announce'), h('span', { class: 'label' }, 'Speak up when an agent finishes or needs me')),
     row('Pause length', ...range('endpoint_ms', 400, 1600, 100, (v) => `${v}ms`)),
     row('Music', ...range('music_volume', 0, 1, 0.05, pct)),
     row('Ducking', ...range('duck', 0, 1, 0.05, pct),
       h('small', {}, 'Music level while either of us talks.')),
-    row('Memory', toggle('memory'), h('span', { class: 'label' }, 'Remember what I tell you across conversations')),
+    row('Memory', toggle('memory'), h('span', { class: 'label' }, 'Remember what I tell you, and the tasks it did, across conversations')),
     row('Conversation', h('button', { onclick: () => send({ type: 'reset' }) }, 'Start fresh')),
   );
 }

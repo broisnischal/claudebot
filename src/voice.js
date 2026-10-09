@@ -10,7 +10,8 @@ export class Voice {
       phase: 'idle', call: false, started: 0, muted: false, tool: '', approval: null,
       level: { mic: 0, out: 0 }, settings: {}, voices: [], models: [], devices: { input: [], output: [] },
       fleet: [], history: [], memory: [], music: { playing: false, paused: false, title: '', query: '' },
-      host: '', audioError: '', partial: '',
+      host: '', audioError: '', partial: '', heard: '',
+      coordinator: { enabled: false, pending: [], log: [], skip: [], cost: 0 }, profiles: [],
     };
     this.handlers = new Map();
     this.ws = null;
@@ -120,10 +121,12 @@ export class Voice {
           history: m.history, phase: m.phase, muted: m.muted, approval: m.approval, call: m.call.active,
           started: m.call.started, memory: m.memory, music: m.music, host: m.host, audioError: m.audio_error,
         });
+        if (m.coordinator) S.coordinator = m.coordinator;
+        if (m.profiles) S.profiles = m.profiles;
         break;
       case 'phase':
         S.phase = m.phase;
-        if (m.phase === 'listening' || m.phase === 'idle') S.tool = '';
+        if (m.phase === 'listening' || m.phase === 'idle') S.tool = S.heard = '';
         break;
       case 'call':
         S.call = m.active;
@@ -136,13 +139,15 @@ export class Voice {
       case 'log': S.history.push(m.entry); if (S.history.length > 300) S.history.shift(); break;
       case 'history': S.history = m.history; break;
       case 'partial': S.partial = m.text; break;
-      case 'heard': S.partial = ''; break;
+      case 'heard': S.partial = ''; S.heard = m.typed ? '' : m.text; break;
       case 'cut': for (const e of S.history) if (e.turn === m.turn && e.role === 'assistant') e.cut = true; break;
       case 'fleet': S.fleet = m.agents; break;
       case 'approval': S.approval = m.approval; break;
       case 'settings': S.settings = m.settings; break;
       case 'memory': S.memory = m.items; break;
       case 'music': S.music = m.music; break;
+      case 'coordinator': S.coordinator = m.coordinator; break;
+      case 'profiles': S.profiles = m.profiles; break;
     }
     this.emit(m.type, m);
   }

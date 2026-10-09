@@ -4,6 +4,7 @@ import { Brain } from './brain.js';
 import { World } from './world.js';
 import { Weather, drawSkyBack, drawSkyFront } from './weather.js';
 import { VoicePet } from './voice-pet.js';
+import { Game } from './game.js';
 
 const UNIT = { small: 4, medium: 5, large: 7 };
 const T = window.__TAURI__;
@@ -20,6 +21,8 @@ const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d');
 const world = new World(invoke);
 const brain = new Brain(world);
+const game = new Game(brain, world, invoke);
+brain.game = game;
 const weather = new Weather((message) => invoke?.('log', { message }).catch(() => {}));
 const voice = new VoicePet(brain, invoke);
 let config = { size: 'medium', color: 'pink', sleepAfterMins: 5, roam: true, notify: true, label: true };
@@ -60,7 +63,8 @@ function fitWindow() {
 world.onOrient = (edge) => {
   orient = edge;
   layout();
-  fitWindow()?.catch(() => {});
+  // refresh() puts the window back if the compositor moved it while applying the new size.
+  fitWindow()?.then(() => setTimeout(() => world.refresh(), 300)).catch(() => {});
 };
 
 async function applyConfig(next) {
@@ -124,15 +128,16 @@ let status = '';
 function frame(now) {
   requestAnimationFrame(frame);
   // 25 fps while things move, half that when the pet is just breathing or asleep.
-  const calm = (brain.view === 'idle' || brain.view === 'sleeping') && !brain.walking && !brain.act && !brain.particles.length && !voice.visible;
+  const calm = (brain.view === 'idle' || brain.view === 'sleeping') && !brain.walking && !brain.act && !brain.particles.length;
   // Full display rate while it's in motion (thrown, falling, sliding, held, travelling).
-  const lively = brain.dragging || world.falling || world.sliding || world.flying || world.moving;
+  const lively = brain.dragging || world.falling || world.sliding || world.flying || world.moving || game.active;
   if (now - last < (lively ? 0 : calm ? 80 : 40)) return;
   const dt = Math.min(now - last, 120);
   last = now;
   if ((window.devicePixelRatio || 1) !== dpr) layout();
   if (brain.dragging) world.holdTick(dt);
   else world.tick(dt);
+  game.tick();
   brain.update(now, dt);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   painter.clear();
@@ -142,9 +147,9 @@ function frame(now) {
   // The weather only makes sense the right way up, on the floor, in view.
   const sky = orient === 'bottom' && !world.rim ? weather.now : null;
   brain.sky = sky;
-  drawSkyBack(painter, sky, now, brain.x);
+  const grounded = !brain.dragging && !world.flying && !world.falling;
+  drawSkyBack(painter, sky, now, brain.x, { clouds: !brain.ownCloud, puddle: grounded });
   brain.draw(painter);
-  voice.draw(painter);
   drawSkyFront(painter, sky, now);
   ctx.restore();
   // The status line only reads well upright and in view, so it rests while the pet is
@@ -184,11 +189,6 @@ function updateHitRegion() {
     width: (SPRITE.w + 2) * unit,
     height: (GROUND - STAND_Y + 7) * unit,
   };
-  const mic = voice.rect();
-  if (mic) {
-    const x0 = Math.min(r.x, mic.x * unit), y0 = Math.min(r.y, mic.y * unit), x1 = Math.max(r.x + r.width, (mic.x + mic.w) * unit), y1 = Math.max(r.y + r.height, (mic.y + mic.h) * unit);
-    Object.assign(r, { x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
-  }
   const hit = toWindowRect(r);
   // The hidden part of a pet tucked behind a window shouldn't swallow that window's clicks.
   const c = world.clip();
@@ -221,6 +221,16 @@ function toWindowRect(r) {
 
 let press = null;
 let dragAt = 0;
+// On Hyprland the pet carries its own window while I drag it (world.holdTick). Handing the move
+// to the compositor took the pointer away: GTK reported the button up a few ms in, so the pet
+// thought it had been put down and walked and fell under the cursor, fighting the move, and the
+// window flickered between the two. Its own drag keeps the pointer: Wayland sends every pointer
+// event to the window that got the press until the button comes up, so the release is the drop.
+let ownDrag = false;
+// Except across monitors: handing the window to the next monitor breaks that hold, and the real
+// release never arrives. So at the edge Hyprland carries it over instead (world.onCross), and only
+// the probe below can tell when it has been put down; the button-up GTK reports is ignored.
+let compositorCarry = false;
 
 // Pointer position in stage units, undoing the window's rotation.
 function toUnits(e) {
@@ -233,23 +243,38 @@ function toUnits(e) {
   return { x: x / unit, y: y / unit };
 }
 
+// Everywhere else the compositor moves the window, and the OS swallows pointer events while it
+// does, so the first event after a drag means the pet has been put down.
 function endDrag() {
-  if (brain.dragging && performance.now() - dragAt > 200) brain.dragEnd();
+  if (!ownDrag && !compositorCarry && brain.dragging && performance.now() - dragAt > 200) brain.dragEnd();
 }
 
+function putDown() {
+  ownDrag = false;
+  compositorCarry = false;
+  brain.dragEnd();
+}
+
+world.onCross = () => {
+  ownDrag = false;
+  compositorCarry = true;
+  dragAt = performance.now();
+  win?.startDragging();
+};
+
 // Wayland compositors never tell the window that a move has finished, and the
-// pointer can leave without crossing the pet again. So while dragging, compare the
-// cursor with the window: the cursor moving on its own means the pet was dropped.
+// pointer can leave without crossing the pet again. So while the compositor drags it,
+// compare the cursor with the window: the cursor moving on its own means the pet was dropped.
 let dragProbe = null;
 setInterval(async () => {
-  if (!invoke || !brain.dragging || performance.now() - dragAt < 300) {
+  if (!invoke || !brain.dragging || ownDrag || performance.now() - dragAt < 300) {
     dragProbe = null;
     return;
   }
   const [state, cursor] = await Promise.all([invoke('world').catch(() => null), invoke('cursor').catch(() => null)]);
   const pos = state?.window;
   if (!pos || !cursor) {
-    if (performance.now() - dragAt > 8000) brain.dragEnd();
+    if (performance.now() - dragAt > 8000) putDown();
     return;
   }
   if (dragProbe) {
@@ -257,7 +282,7 @@ setInterval(async () => {
     const windowMoved = Math.hypot(pos.x - dragProbe.pos.x, pos.y - dragProbe.pos.y) > 1;
     if (cursorMoved && !windowMoved) {
       dragProbe = null;
-      brain.dragEnd();
+      putDown();
       return;
     }
   }
@@ -266,20 +291,28 @@ setInterval(async () => {
 
 canvas.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
-  if (voice.down(toUnits(e))) return;
   press = { x: e.screenX, y: e.screenY };
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  // The OS swallows pointer events while it moves the window, so the first event
-  // after a drag means the pet has been put down.
+  if (compositorCarry) return;
+  if (ownDrag) {
+    if (!(e.buttons & 1)) putDown(); // the release went missing; the first move without the button tells
+    return;
+  }
   endDrag();
   brain.pointer = toUnits(e);
-  voice.hover(brain.pointer);
   if (!press || Math.hypot(e.screenX - press.x, e.screenY - press.y) < 4) return;
   press = null;
-  brain.dragStart();
   dragAt = performance.now();
+  if (world.backend === 'hyprland' && world.canRoam) {
+    ownDrag = true;
+    canvas.setPointerCapture(e.pointerId);
+    const css = parseFloat(canvas.style.width) / world.win.w || 1; // CSS px per desktop px
+    brain.dragStart({ x: e.offsetX / css, y: e.offsetY / css });
+    return;
+  }
+  brain.dragStart();
   if (win) {
     win.startDragging().then(() => {
       // Windows and macOS resolve once the drag finishes; Linux resolves right away.
@@ -288,20 +321,26 @@ canvas.addEventListener('pointermove', (e) => {
   }
 });
 
-canvas.addEventListener('pointerup', (e) => {
-  if (voice.up()) {
-    press = null;
-    return;
+canvas.addEventListener('pointerup', () => {
+  if (compositorCarry) return;
+  if (ownDrag) putDown();
+  else if (brain.dragging) brain.dragEnd();
+  else if (press) {
+    voice.tap();
+    brain.poke();
   }
-  if (brain.dragging) brain.dragEnd();
-  else if (press && !voice.press(toUnits(e))) brain.poke();
   press = null;
 });
 
+// Released some way the window never heard about: put it down rather than carry it forever.
+canvas.addEventListener('lostpointercapture', () => {
+  if (ownDrag) putDown();
+});
+
 canvas.addEventListener('pointerleave', () => {
+  if (ownDrag || compositorCarry) return; // carried under the cursor, it can slip out from under it for a frame
   endDrag();
   brain.pointer = null;
-  voice.leave();
   press = null;
 });
 

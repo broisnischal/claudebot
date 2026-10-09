@@ -39,22 +39,26 @@ export function supportBelow(w, fromFeet) {
   return best;
 }
 
-// Real desktop edges are walls; an edge shared with another monitor lets the pet through.
+// Every monitor edge is a wall: the pet only changes monitors when I carry it across, or on
+// a jump I asked for (`crossing`), which goes through an edge shared with another monitor.
 function walls(w, prev, events) {
   const k = w.k;
-  const m = w.monitor();
+  // the monitor it took off from: going by where its middle is now, a throw that starts near the
+  // edge would just switch monitors
+  const m = (!w.crossing && w.motionMonitor) || w.monitor();
+  const wall = (edge) => !w.crossing || w.outer(edge, m);
   let b = box(w);
-  if (b.left < m.x && w.vx < 0 && w.outer('left', m)) {
+  if (b.left < m.x && w.vx < 0 && wall('left')) {
     w.win.x += m.x - b.left;
     w.vx = -w.vx * PHYS.bounce.wall;
     events.push(['wall', Math.abs(w.vx) / k]);
-  } else if (b.right > m.x + m.w && w.vx > 0 && w.outer('right', m)) {
+  } else if (b.right > m.x + m.w && w.vx > 0 && wall('right')) {
     w.win.x -= b.right - (m.x + m.w);
     w.vx = -w.vx * PHYS.bounce.wall;
     events.push(['wall', Math.abs(w.vx) / k]);
   }
   b = box(w);
-  if (b.top < m.y && w.vy < 0 && w.outer('top', m)) {
+  if (b.top < m.y && w.vy < 0 && wall('top')) {
     w.win.y += m.y - b.top;
     w.vy = -w.vy * PHYS.bounce.ceiling;
     events.push(['wall', Math.abs(w.vy) / k]);

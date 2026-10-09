@@ -443,17 +443,39 @@ export const VIEWS = {
 
   // ---- one-shot reactions ----
 
-  // Hanging from the cursor: the body swings behind the motion and sways back.
+  // Carried by the cursor. In the air it dangles: the body swings behind the motion, the legs
+  // paddle and the arms flail faster the faster it's carried, and it stretches when yanked up
+  // and squashes when swung down. Dragged along the floor it crawls: low, legs scrabbling in
+  // step with the speed, the arm on the leading side reaching out, looking where it's going.
   dragged(b, p, pose) {
-    const k = Math.floor(b.now / 120) % 2;
-    const lean = b.world?.dangle.lean ?? 0;
+    const w = b.world;
+    const { vx = 0, vy = 0, speed = 0 } = w?.holdSpeed?.() ?? {};
+    if (w?.holdGround) {
+      const dir = Math.abs(vx) > 6 ? Math.sign(vx) : 0;
+      const step = Math.floor(b.now / Math.max(45, 140 - Math.abs(vx) * 0.6)) % 2;
+      pose.y += 1;
+      pose.squash = 2;
+      pose.legs = dir ? (step ? [1, 0, 1, 0] : [0, 1, 0, 1]) : [1, 1, 1, 1];
+      pose.armL = dir < 0 ? (step ? -2 : 0) : 1;
+      pose.armR = dir > 0 ? (step ? -2 : 0) : 1;
+      pose.eyes = Math.abs(vx) > 90 ? 'squeeze' : 'open';
+      pose.look = [dir, 1];
+      pose.mouth = null;
+      drawClawd(p, pose);
+      return;
+    }
+    const lean = w?.dangle.lean ?? 0;
+    const k = Math.floor(b.now / Math.max(50, 150 - speed * 0.35)) % 2;
+    const flail = speed > 60;
     pose.y -= 1;
     pose.x += Math.round(lean * 0.7);
     pose.legs = lean > 1.2 ? [2, 2, 3, 3] : lean < -1.2 ? [3, 3, 2, 2] : k ? [3, 2, 3, 2] : [2, 3, 2, 3];
-    pose.armL = pose.armR = -4;
-    pose.eyes = 'wide';
+    pose.armL = flail && k ? -2 : -4;
+    pose.armR = flail && !k ? -2 : -4;
+    pose.squash = vy < -150 ? -1 : vy > 150 ? 1 : 0;
+    pose.eyes = speed > 200 ? 'big' : 'wide';
     pose.look = [0, 0];
-    pose.mouth = 'o';
+    pose.mouth = speed > 200 ? 'O' : 'o';
     drawClawd(p, pose);
   },
 

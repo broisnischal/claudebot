@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the pet, the voice panel and the voice HUD are allowed to do",
+  "description": "What the pet, the voice panel, the voice HUD and the game layer are allowed to do",
   "windows": [
     "main",
     "panel",
-    "hud"
+    "hud",
+    "play"
   ],
   "permissions": [
     "core:default",

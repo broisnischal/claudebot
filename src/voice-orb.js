@@ -1,5 +1,5 @@
-// The voice's little round mark, drawn in half-unit pixels: the mic button on the pet, and the call
-// orb in the bottom-left HUD. One function so both look the same.
+// The voice's little round mark in the bottom-left HUD, drawn in half-unit pixels: the mic button
+// while the voice is idle, and the call orb while it's busy. One function so both look the same.
 import { CLAUDE, spinnerFrame } from './sprite.js';
 
 const MIC = ['.###.', '.###.', '.###.', '#...#', '.###.', '..#..', '.###.'];

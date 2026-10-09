@@ -1,6 +1,9 @@
-// The voice HUD: a small fixed strip at the bottom left of the screen with the call orb and what
-// the voice is doing. It shows while the voice is busy or music plays and hides otherwise. Click
-// the orb to hang up, the text to open the voice panel.
+// The voice HUD: a small fixed strip at the bottom left of the right-hand screen with the mic and
+// what the voice is doing. The mic is there whenever the voice can run; next to it, the status
+// shows while the voice is busy or music plays, and a hint while I hover the mic.
+//
+// Click the mic to talk (it turns the voice on first if it was off) and again to hang up; while a
+// typed request is being answered, it stops the answer instead. Click the status for the voice panel.
 import { Painter, spinnerFrame, CLAUDE } from './sprite.js';
 import { drawText, textWidth, fit } from './font.js';
 import { Voice } from './voice.js';
@@ -34,19 +37,31 @@ let shownAt = 0;
 let shown = null;
 let hitKey = '';
 let orbRight = 0;
+let hovered = false; // the pointer is over the mic
+let pressedAt = -1e9;
+let hint = '';
+let hintUntil = 0;
 
 voice.on('caption', (m) => (caption = m.text));
 voice.on('heard', () => (caption = ''));
 
 const enabled = () => S.settings.enabled !== false;
+const available = () => S.engine !== 'unavailable';
 const busy = () => S.connected && enabled() && (S.call || S.phase !== 'idle');
 const music = () => S.connected && (S.music.playing || S.music.paused);
 
+// What the status pill says, or null for none (just the mic).
 function label() {
-  if (!busy()) return { text: S.music.paused ? `Paused: ${S.music.title}` : S.music.title };
+  if (performance.now() < hintUntil) return { text: hint };
+  if (!busy()) {
+    if (hovered) return { text: !S.connected ? 'Voice is starting' : enabled() ? 'Click to talk' : 'Voice is off, click to talk' };
+    if (music()) return { text: S.music.paused ? `Paused: ${S.music.title}` : S.music.title };
+    return null;
+  }
   if (S.phase === 'speaking') return { text: caption || 'Speaking' };
   if (S.phase === 'approval') return { text: S.approval?.title || TEXT.approval, color: '#FF8A8A' };
-  if (S.phase === 'thinking') return { text: S.tool || TEXT.thinking, spin: true };
+  // what it heard stays up until it starts working on it, so a mishearing shows without the panel
+  if (S.phase === 'thinking') return { text: S.tool || S.heard || TEXT.thinking, spin: true };
   if (S.phase === 'transcribing') return { text: S.partial || TEXT.transcribing, spin: true };
   if (S.phase === 'hearing' && S.partial) return { text: S.partial }; // my words, as I say them
   return { text: TEXT[S.phase] || TEXT.listening };
@@ -75,16 +90,22 @@ function frame(now) {
   const cell = Math.max(1, Math.round(CSS.cell * dpr));
   const oy = Math.round((H - N * cell) / 2);
   const ox = Math.round(CSS.pad * dpr);
-  const phase = busy() ? S.phase : 'music';
+  // the mic: the voice's own state while it's busy, else the button (greyed while the voice is off)
+  const phase = busy() ? S.phase : S.connected && enabled() ? 'idle' : 'off';
   const fade = Math.min(1, (now - shownAt) / 160);
-  drawOrb(ctx, ox, oy, cell, N, { phase, level, now, fade, color: '#D78787' });
+  const pressed = now - pressedAt < 160;
+  drawOrb(ctx, ox, oy, cell, N, { phase, level, now, fade, color: '#D78787', hot: hovered || pressed, pressed });
   orbRight = (ox + N * cell) / dpr;
 
   // the status pill, in the pet's pixel font
+  const l = label();
   const fpx = Math.max(1, Math.round(CSS.font * dpr));
   const px0 = ox + N * cell + Math.round(CSS.gap * dpr);
+  if (!l) {
+    hitRegion(Math.ceil(orbRight) + 2);
+    return;
+  }
   const room = Math.floor((W - px0) / fpx) - 8;
-  const l = label();
   const spin = l.spin ? 7 : 0;
   const text = fit((l.text || '').toUpperCase(), room - spin);
   const w = 5 + spin + textWidth(text);
@@ -95,18 +116,21 @@ function frame(now) {
   if (spin) p.bitmap(spinnerFrame(Math.floor(now / 110)), 3, 2, CLAUDE);
   drawText(p, text, 3 + spin, 2, l.color || '#F4EFE6', fade);
 
-  // only the orb and the pill take clicks; the rest of the strip lets them through
-  const r = { x: 0, y: 0, width: Math.ceil((px0 + w * fpx) / dpr) + 2, height: innerHeight };
-  const key = `${r.width}`;
+  hitRegion(Math.ceil((px0 + w * fpx) / dpr) + 2);
+}
+
+// Only the mic and the pill take clicks; the rest of the strip lets them through.
+function hitRegion(width) {
+  const key = `${width}`;
   if (invoke && key !== hitKey) {
     hitKey = key;
-    invoke('set_hit_region', r).catch(() => {});
+    invoke('set_hit_region', { x: 0, y: 0, width, height: innerHeight }).catch(() => {});
   }
 }
 
 // A hidden window gets no animation frames, so showing and hiding runs on a plain timer.
 function visibility() {
-  const want = busy() || music();
+  const want = available();
   if (want === shown) return;
   shown = want;
   if (want) shownAt = performance.now();
@@ -120,14 +144,35 @@ function visibility() {
 }
 setInterval(visibility, 150);
 
+// The mic: go live (turning the voice on first if it was off), hang up during a call, and while a
+// typed request is being answered outside a call, stop it.
+function mic() {
+  if (!S.connected) {
+    hint = 'Voice is starting';
+    hintUntil = performance.now() + 2400;
+  } else if (!enabled()) {
+    voice.send({ type: 'voice', on: true });
+    voice.send({ type: 'call', action: 'start' });
+  } else if (S.call) {
+    voice.send({ type: 'call', action: 'end' });
+  } else if (busy()) {
+    voice.send({ type: 'interrupt' });
+  } else {
+    voice.send({ type: 'call', action: 'start' });
+  }
+}
+
+const onMic = (e) => e.offsetX <= orbRight + 2;
+
+canvas.addEventListener('pointermove', (e) => (hovered = onMic(e)));
+canvas.addEventListener('pointerleave', () => (hovered = false));
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.button === 0 && onMic(e)) pressedAt = performance.now();
+});
 canvas.addEventListener('pointerup', (e) => {
   if (e.button !== 0) return;
-  if (e.offsetX <= orbRight + 2) {
-    if (S.call) voice.send({ type: 'call', action: 'end' });
-    else voice.send({ type: 'interrupt' });
-  } else {
-    invoke?.('toggle_panel').catch(() => {});
-  }
+  if (onMic(e)) mic();
+  else invoke?.('toggle_panel').catch(() => {});
 });
 
 requestAnimationFrame(frame);

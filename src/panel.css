@@ -321,6 +321,29 @@ body.drawer-open .drawer { opacity: 1; transform: translateX(-50%); pointer-even
 }
 .agent-actions button:hover, .settings-row button:hover { background: var(--chip-hover); }
 .empty { padding: 28px 12px; text-align: center; color: var(--ink-3); font-size: 13px; }
+.agent-note { margin: 4px 0 0 16px; font-size: 12.5px; color: var(--ink-2); }
+.agent-note.blocked, .agent-note.needs { color: var(--ink); }
+
+/* coordinator */
+.coord { margin: 0 0 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.03); }
+.coord-head { display: flex; align-items: baseline; gap: 8px; }
+.coord-title { font-weight: 600; font-size: 13.5px; }
+.coord-sub { font-size: 12px; color: var(--ink-3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coord-toggle, .coord-actions button {
+  height: 26px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); font-size: 12px;
+}
+.coord-toggle { margin-left: auto; }
+.coord-toggle[aria-pressed="true"], .coord-actions .primary { background: var(--solid); color: var(--solid-ink); border-color: transparent; }
+.coord-toggle:hover, .coord-actions button:hover { background: var(--chip-hover); }
+.coord-toggle[aria-pressed="true"]:hover, .coord-actions .primary:hover { background: var(--solid-hover); }
+.coord-card { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.coord-text { font-size: 13px; }
+.coord-detail { margin: 6px 0 0; font: 11.5px/1.5 var(--mono); color: var(--ink-2); white-space: pre-wrap; max-height: 120px; overflow: auto; }
+.coord-actions { display: flex; gap: 6px; margin-top: 8px; }
+.coord-log { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.coord-log summary { cursor: pointer; color: var(--ink-3); }
+.coord-log p { margin: 4px 0 0; }
+.coord-when { font-variant-numeric: tabular-nums; color: var(--ink-3); }
 
 /* transcript */
 .entry { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; padding: 6px 4px; align-items: baseline; }

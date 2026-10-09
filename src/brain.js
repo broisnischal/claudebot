@@ -170,6 +170,8 @@ export class Brain {
     this.pointer = null;
     this.stageRim = null;
     this.dragging = false;
+    this.game = null; // fetch and the screen-wide tricks (game.js), set by main.js
+    this.playing = false; // a game of fetch is on: no wandering off, no nodding off
     this.pokes = [];
     this.particles = [];
 
@@ -208,6 +210,12 @@ export class Brain {
     const rim = this.world?.rim;
     if ((rim && rim.mode !== 'sit' && !rim.route.length) || this.stageRim) return 'peeking';
     return this.overlay ?? this.mood;
+  }
+
+  // Scenes that draw a cloud over the pet's head, so the weather leaves its own out.
+  get ownCloud() {
+    const view = this.view;
+    return view === 'error' || (view === 'thinking' && this.style === 'weather');
   }
 
   // ---- Claude Code events ----------------------------------------------
@@ -415,6 +423,14 @@ export class Brain {
 
   play(name) {
     this.lastActive = this.now;
+    // Held up by the cursor it can't act anything out, and a flight or walk started now would
+    // yank the window from where it was picked up the moment it's let go.
+    if (this.dragging) return;
+    if (name === 'fetch' || name === 'fetch:stop') {
+      if (this.game) this.game.toggle(name);
+      else this.toast('No fetch here');
+      return;
+    }
     if (GESTURES.includes(name)) {
       this.world?.stop();
       if (this.mood === 'sleeping') this.setMood('idle', true);
@@ -524,12 +540,15 @@ export class Brain {
     this.spawn({ kind: 'glyph', glyph: GLYPHS.heart, color: '#F06A7A', x: this.x + 14, y: STAND_Y - 3, vx: 2, vy: -6, life: 0.9 });
   }
 
-  dragStart() {
+  // `grip`: where the pointer holds the pet, in window px, when the pet carries its own window.
+  dragStart(grip = null) {
     this.dragging = true;
     this.lastActive = this.now;
     this.overlay = null;
     this.act = null;
-    this.world?.grab();
+    // Skipped stones and kicked balls roll along the floor it just left.
+    this.particles = this.particles.filter((pt) => !pt.bounce);
+    this.world?.grab(grip);
     if (this.mood === 'sleeping') this.mood = 'idle';
   }
 
@@ -681,7 +700,8 @@ export class Brain {
 
     if (this.voice?.active) this.lastActive = now; // never nod off mid-conversation
     const restful = this.mood === 'idle' || this.mood === 'waiting';
-    if (restful && !this.overlay && !this.dragging && now - this.lastActive > this.sleepAfter) {
+    if (this.playing) this.lastActive = now;
+    if (restful && !this.overlay && !this.dragging && !this.playing && now - this.lastActive > this.sleepAfter) {
       this.lastActive = now;
       this.world?.stop();
       this.flash('yawn', () => this.setMood('sleeping'));
@@ -693,7 +713,7 @@ export class Brain {
     }
 
     this.noticeCursor(now);
-    if (this.mood === 'idle' && !this.overlay && !this.dragging) this.idleTick(now);
+    if (this.mood === 'idle' && !this.overlay && !this.dragging && !this.playing) this.idleTick(now);
     if (this.mood === 'thinking' && this.style === 'wander' && !this.walking && now > this.nextPaceAt) {
       this.stepMs = 140;
       if (!this.world?.wander(4, 6)) this.stageWalk(3);
@@ -770,12 +790,21 @@ export class Brain {
     const lonely = now - this.lastActive > 60e3;
     const onFloor = this.canRoam && !rim;
     const cursorHere = onFloor && this.world.sameMonitor(this.world.cursor);
-    this.startAct(weighted([
+    const next = weighted([
       ['look', 4], ['walk', 5], ['hop', 2], ['wave', 1], ['sit', 2], ['stretch', 1],
       ['dance', 0.6], ['zoomies', onFloor ? 0.8 : 0], ['chase', cursorHere ? 1.2 : 0],
       ['trip', rim ? 0 : 0.3], ['sneeze', 0.4], ['yawn', lonely ? 2 : 0], ['fly', onFloor ? 0.25 : 0],
       ['explore', onFloor ? 0.35 : 0],
-    ]));
+      // its tricks, now and then: stones skim and a kicked ball flies across the screen
+      ['stones', onFloor ? 0.35 : 0], ['kick', onFloor ? 0.3 : 0], ['juggle', rim ? 0 : 0.3],
+      ['flex', 0.15], ['kiss', 0.15],
+    ]);
+    if (GESTURES.includes(next)) {
+      this.flash(next);
+      this.nextActAt = now + OVERLAY_MS[next] + rand(4000, 10000);
+      return;
+    }
+    this.startAct(next);
   }
 
   emit(now) {
@@ -846,15 +875,16 @@ export class Brain {
   gestureTick() {
     const g = this.overlay;
     const x = this.x;
+    if (g === 'stones' || g === 'kick') this.beat(0, () => this.game?.prepare());
     if (g === 'stones') {
       for (const at of [700, 1900, 3100]) {
-        this.beat(at, () => this.spawn({
+        this.beat(at, () => this.game?.stone() || this.spawn({
           w: pick([1, 1, 2]), color: pick(['#8D8A84', '#A7A39B', '#6F6B66']),
           x: x + 17, y: STAND_Y + 1, vx: rand(10, 15), vy: -rand(14, 19), g: 38, life: 3.4, bounce: true,
         }));
       }
     } else if (g === 'kick') {
-      this.beat(900, () => this.spawn({ kind: 'ball', w: 2, h: 2, x: x + 17, y: GROUND - 2, vx: rand(17, 22), vy: -rand(12, 16), g: 38, life: 2.6, bounce: true }));
+      this.beat(900, () => this.game?.kick() || this.spawn({ kind: 'ball', w: 2, h: 2, x: x + 17, y: GROUND - 2, vx: rand(17, 22), vy: -rand(12, 16), g: 38, life: 2.6, bounce: true }));
     } else if (g === 'kiss') {
       this.beat(900, () => this.spawn({ kind: 'glyph', glyph: GLYPHS.heart, color: '#F06A7A', x: x + 10, y: STAND_Y + 3, vx: 7, vy: -2.5, wobble: 1.2, life: 1.8 }));
     } else if (g === 'flex') {
@@ -870,9 +900,10 @@ export class Brain {
 
   lookDir() {
     const w = this.world;
-    if (w?.cursor && w.win) {
+    const at = this.game?.lookAt() || w?.cursor;
+    if (at && w.win) {
       const c = w.petCenter();
-      const [dx, dy] = w.toStage((w.cursor.x - c.x) / w.k, (w.cursor.y - c.y) / w.k);
+      const [dx, dy] = w.toStage((at.x - c.x) / w.k, (at.y - c.y) / w.k);
       return [dx < -6 ? -1 : dx > 6 ? 1 : 0, dy < -8 ? -1 : dy > 12 ? 1 : 0];
     }
     if (this.pointer) {
